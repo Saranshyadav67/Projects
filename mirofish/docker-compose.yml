@@ -1,0 +1,18 @@
+
+
+
+services:
+  mirofish:
+    # Users in China are recommended to use the Nanjing University mirror acceleration
+    image: ghcr.nju.edu.cn/666ghj/mirofish:latest
+    # For overseas users or if the accelerated mirror fails, switch back to the original address:
+    # image: ghcr.io/666ghj/mirofish:latest
+    container_name: mirofish
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"  # Web UI port
+      - "5001:5001"  # Backend API port
+    restart: unless-stopped
+    volumes:
+      - ./backend/uploads:/app/backend/uploads  # Data persistence

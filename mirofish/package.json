@@ -1,0 +1,32 @@
+
+{
+  "name": "mirofish",
+  "version": "0.1.0",
+  // Description: "MiroFish - A concise and versatile swarm intelligence engine for predicting everything"
+  "description": "MiroFish - A concise and versatile swarm intelligence engine for predicting everything",
+  "scripts": {
+    // Install dependencies for root and frontend
+    "setup": "npm install && cd frontend && npm install",
+    // Install Python backend dependencies using uv
+    "setup:backend": "cd backend && uv sync",
+    // Install all dependencies (Node.js & Python)
+    "setup:all": "npm run setup && npm run setup:backend",
+    // Start both backend and frontend concurrently in development mode
+    "dev": "concurrently --kill-others -n \"backend,frontend\" -c \"green,cyan\" \"npm run backend\" \"npm run frontend\"",
+    // Start the backend server
+    "backend": "cd backend && uv run python run.py",
+    // Start the frontend development server
+    "frontend": "cd frontend && npm run dev",
+    // Build the frontend for production
+    "build": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    // Utility to run multiple commands simultaneously
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    // Requires Node.js version 18.0.0 or higher
+    "node": ">=18.0.0"
+  },
+  "license": "AGPL-3.0"
+}

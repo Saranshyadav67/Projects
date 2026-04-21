@@ -1,0 +1,29 @@
+
+# --- Git, GitHub, and Editor Config ---
+.git                 # Git repository metadata
+.github              # GitHub specific configurations (e.g., Actions workflows)
+.gitignore           # List of files to ignore in Git (sometimes ignored in templates)
+.cursor              # Cursor editor settings
+.DS_Store            # macOS system file (folder attributes)
+.env                 # Environment variables file (CRITICAL: Contains secrets, do not commit)
+
+# --- Dependencies ---
+node_modules         # Root Node.js dependencies
+frontend/node_modules # Frontend Node.js dependencies
+backend/.venv        # Backend Python virtual environment
+.venv                # Root Python virtual environment
+.python-version      # Pyenv version file
+
+# --- Python Cache & Artifacts ---
+__pycache__          # Python bytecode cache directory
+*.pyc                # Compiled Python files
+.pytest_cache        # Pytest cache
+.mypy_cache          # MyPy type checker cache
+.ruff_cache          # Ruff linter cache
+
+# --- Build Outputs ---
+frontend/dist        # Frontend build output (production artifacts)
+frontend/.vite       # Vite temporary cache
+
+# --- Application Data ---
+backend/uploads      # User uploaded files (data persistence)

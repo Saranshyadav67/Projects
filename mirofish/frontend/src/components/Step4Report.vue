@@ -1,0 +1,2377 @@
+<template>
+  <div class="report-panel">
+    <!-- Main Split Layout: Divides the screen into a left report view and a right workflow timeline -->
+    <div class="main-split-layout">
+      <!-- LEFT PANEL: Displays the generated report in a readable style -->
+      <div class="left-panel report-style" ref="leftPanel">
+        <div v-if="reportOutline" class="report-content-wrapper">
+          <!-- Report Header: Contains metadata, title, and summary -->
+          <div class="report-header-block">
+            <div class="report-meta">
+              <!-- Static tag for the report type -->
+              <span class="report-tag">Prediction Report</span>
+              <!-- Display Report ID, fallback to a placeholder if not provided -->
+              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+            </div>
+            <!-- Main Title derived from the report outline -->
+            <h1 class="main-title">{{ reportOutline.title }}</h1>
+            <!-- Sub-title/Summary derived from the report outline -->
+            <p class="sub-title">{{ reportOutline.summary }}</p>
+            <!-- Visual divider line -->
+            <div class="header-divider"></div>
+          </div>
+
+          <!-- Sections List: Iterates through the report sections -->
+          <div class="sections-list">
+            <div 
+              v-for="(section, idx) in reportOutline.sections" 
+              :key="idx"
+              class="report-section-item"
+              <!-- Dynamic classes to handle active, completed, and pending states -->
+              :class="{ 
+                'is-active': currentSectionIndex === idx + 1,
+                'is-completed': isSectionCompleted(idx + 1),
+                'is-pending': !isSectionCompleted(idx + 1) && currentSectionIndex !== idx + 1
+              }"
+            >
+              <!-- Section Header: Clickable to collapse/expand if completed -->
+              <div class="section-header-row" @click="toggleSectionCollapse(idx)" :class="{ 'clickable': isSectionCompleted(idx + 1) }">
+                <!-- Section number, padded with zero -->
+                <span class="section-number">{{ String(idx + 1).padStart(2, '0') }}</span>
+                <h3 class="section-title">{{ section.title }}</h3>
+                <!-- Collapse icon: Visible only for completed sections, rotates based on state -->
+                <svg 
+                  v-if="isSectionCompleted(idx + 1)" 
+                  class="collapse-icon" 
+                  :class="{ 'is-collapsed': collapsedSections.has(idx) }"
+                  viewBox="0 0 24 24" 
+                  width="20" 
+                  height="20" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  stroke-width="2"
+                >
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </div>
+              
+              <!-- Section Body: Contains content, loading state, or remains hidden -->
+              <div class="section-body" v-show="!collapsedSections.has(idx)">
+                <!-- Completed Content: Rendered markdown if section exists in generatedSections -->
+                <div v-if="generatedSections[idx + 1]" class="generated-content" v-html="renderMarkdown(generatedSections[idx + 1])"></div>
+                
+                <!-- Loading State: Shown if this is the current section being processed -->
+                <div v-else-if="currentSectionIndex === idx + 1" class="loading-state">
+                  <div class="loading-icon">
+                    <!-- SVG Spinner -->
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                      <circle cx="12" cy="12" r="10" stroke-width="4" stroke="#E5E7EB"></circle>
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke-width="4" stroke="#4B5563" stroke-linecap="round"></path>
+                    </svg>
+                  </div>
+                  <span class="loading-text">Generating {{ section.title }}...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Waiting State: Shown when no report outline is available yet -->
+        <div v-if="!reportOutline" class="waiting-placeholder">
+          <div class="waiting-animation">
+            <!-- Animated rings to indicate waiting -->
+            <div class="waiting-ring"></div>
+            <div class="waiting-ring"></div>
+            <div class="waiting-ring"></div>
+          </div>
+          <span class="waiting-text">Waiting for Report Agent...</span>
+        </div>
+      </div>
+
+      <!-- RIGHT PANEL: Displays the workflow timeline and agent logs -->
+      <div class="right-panel" ref="rightPanel">
+        <!-- Panel Header: Shows the current active step status -->
+        <div class="panel-header" :class="`panel-header--${activeStep.status}`" v-if="!isComplete">
+          <!-- Indicator dot for active status -->
+          <span class="header-dot" v-if="activeStep.status === 'active'"></span>
+          <span class="header-index mono">{{ activeStep.noLabel }}</span>
+          <span class="header-title">{{ activeStep.title }}</span>
+          <span class="header-meta mono" v-if="activeStep.meta">{{ activeStep.meta }}</span>
+        </div>
+
+        <!-- Workflow Overview: Metrics and step progress visualization -->
+        <div class="workflow-overview" v-if="agentLogs.length > 0 || reportOutline">
+          <div class="workflow-metrics">
+            <!-- Metric: Section Progress -->
+            <div class="metric">
+              <span class="metric-label">Sections</span>
+              <span class="metric-value mono">{{ completedSections }}/{{ totalSections }}</span>
+            </div>
+            <!-- Metric: Elapsed Time -->
+            <div class="metric">
+              <span class="metric-label">Elapsed</span>
+              <span class="metric-value mono">{{ formatElapsedTime }}</span>
+            </div>
+            <!-- Metric: Total Tool Calls -->
+            <div class="metric">
+              <span class="metric-label">Tools</span>
+              <span class="metric-value mono">{{ totalToolCalls }}</span>
+            </div>
+            <!-- Status Pill: Dynamic color based on processing state -->
+            <div class="metric metric-right">
+              <span class="metric-pill" :class="`pill--${statusClass}`">{{ statusText }}</span>
+            </div>
+          </div>
+
+          <!-- Workflow Steps: Visual representation of the pipeline stages -->
+          <div class="workflow-steps" v-if="workflowSteps.length > 0">
+            <div
+              v-for="(step, sidx) in workflowSteps"
+              :key="step.key"
+              class="wf-step"
+              :class="`wf-step--${step.status}`"
+            >
+              <!-- Connector: Dot and line connecting steps -->
+              <div class="wf-step-connector">
+                <div class="wf-step-dot"></div>
+                <div class="wf-step-line" v-if="sidx < workflowSteps.length - 1"></div>
+              </div>
+
+              <div class="wf-step-content">
+                <div class="wf-step-title-row">
+                  <span class="wf-step-index mono">{{ step.noLabel }}</span>
+                  <span class="wf-step-title">{{ step.title }}</span>
+                  <span class="wf-step-meta mono" v-if="step.meta">{{ step.meta }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Next Step Button: Shown after completion to navigate to interaction -->
+          <button v-if="isComplete" class="next-step-btn" @click="goToInteraction">
+            <span>Enter Deep Interaction</span>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </button>
+
+          <div class="workflow-divider"></div>
+        </div>
+
+        <!-- Workflow Timeline: Scrollable list of log entries -->
+        <div class="workflow-timeline">
+          <TransitionGroup name="timeline-item">
+            <div 
+              v-for="(log, idx) in displayLogs" 
+              :key="log.timestamp + '-' + idx"
+              class="timeline-item"
+              :class="getTimelineItemClass(log, idx, displayLogs.length)"
+            >
+              <!-- Timeline Connector: Visual dot and line for each log entry -->
+              <div class="timeline-connector">
+                <div class="connector-dot" :class="getConnectorClass(log, idx, displayLogs.length)"></div>
+                <div class="connector-line" v-if="idx < displayLogs.length - 1"></div>
+              </div>
+              
+              <!-- Timeline Content: The actual log information -->
+              <div class="timeline-content">
+                <div class="timeline-header">
+                  <span class="action-label">{{ getActionLabel(log.action) }}</span>
+                  <span class="action-time">{{ formatTime(log.timestamp) }}</span>
+                </div>
+                
+                <!-- Action Body: Context-specific rendering based on log action type -->
+                <div class="timeline-body" :class="{ 'collapsed': isLogCollapsed(log) }" @click="toggleLogExpand(log)">
+                  
+                  <!-- Report Start: Initial log entry -->
+                  <template v-if="log.action === 'report_start'">
+                    <div class="info-row">
+                      <span class="info-key">Simulation</span>
+                      <span class="info-val mono">{{ log.details?.simulation_id }}</span>
+                    </div>
+                    <div class="info-row" v-if="log.details?.simulation_requirement">
+                      <span class="info-key">Requirement</span>
+                      <span class="info-val">{{ log.details.simulation_requirement }}</span>
+                    </div>
+                  </template>
+
+                  <!-- Planning Logs: Start and Complete states -->
+                  <template v-if="log.action === 'planning_start'">
+                    <div class="status-message planning">{{ log.details?.message }}</div>
+                  </template>
+                  <template v-if="log.action === 'planning_complete'">
+                    <div class="status-message success">{{ log.details?.message }}</div>
+                    <div class="outline-badge" v-if="log.details?.outline">
+                      {{ log.details.outline.sections?.length || 0 }} sections planned
+                    </div>
+                  </template>
+
+                  <!-- Section Logs: Start, Content, and Complete -->
+                  <template v-if="log.action === 'section_start'">
+                    <div class="section-tag">
+                      <span class="tag-num">#{{ log.section_index }}</span>
+                      <span class="tag-title">{{ log.section_title }}</span>
+                    </div>
+                  </template>
+                  
+                  <template v-if="log.action === 'section_content'">
+                    <div class="section-tag content-ready">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 20h9"></path>
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                      </svg>
+                      <span class="tag-title">{{ log.section_title }}</span>
+                    </div>
+                  </template>
+
+                  <template v-if="log.action === 'section_complete'">
+                    <div class="section-tag completed">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                      <span class="tag-title">{{ log.section_title }}</span>
+                    </div>
+                  </template>
+
+                  <!-- Tool Call: Renders badge with icon and parameters if expanded -->
+                  <template v-if="log.action === 'tool_call'">
+                    <div class="tool-badge" :class="'tool-' + getToolColor(log.details?.tool_name)">
+                      <!-- Icon selection based on tool type -->
+                      <svg v-if="getToolIcon(log.details?.tool_name) === 'lightbulb'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.5V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.5A7 7 0 0 0 12 2z"></path>
+                      </svg>
+                      <svg v-else-if="getToolIcon(log.details?.tool_name) === 'globe'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                      </svg>
+                      <svg v-else-if="getToolIcon(log.details?.tool_name) === 'users'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path>
+                      </svg>
+                      <svg v-else-if="getToolIcon(log.details?.tool_name) === 'zap'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                      </svg>
+                      <svg v-else-if="getToolIcon(log.details?.tool_name) === 'chart'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="20" x2="18" y2="10"></line>
+                        <line x1="12" y1="20" x2="12" y2="4"></line>
+                        <line x1="6" y1="20" x2="6" y2="14"></line>
+                      </svg>
+                      <svg v-else-if="getToolIcon(log.details?.tool_name) === 'database'" class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                        <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                        <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                      </svg>
+                      <!-- Default Icon -->
+                      <svg v-else class="tool-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                      </svg>
+                      {{ getToolDisplayName(log.details?.tool_name) }}
+                    </div>
+                    <!-- Tool Parameters: Shown when expanded -->
+                    <div v-if="log.details?.parameters && expandedLogs.has(log.timestamp)" class="tool-params">
+                      <pre>{{ formatParams(log.details.parameters) }}</pre>
+                    </div>
+                  </template>
+
+                  <!-- Tool Result: Structured display for specific tools -->
+                  <template v-if="log.action === 'tool_result'">
+                    <div class="result-wrapper" :class="'result-' + log.details?.tool_name">
+                      <div v-if="!['interview_agents', 'insight_forge', 'panorama_search', 'quick_search'].includes(log.details?.tool_name)" class="result-meta">
+                        <span class="result-tool">{{ getToolDisplayName(log.details?.tool_name) }}</span>
+                        <span class="result-size">{{ formatResultSize(log.details?.result_length) }}</span>
+                      </div>
+                      
+                      <!-- Structured Result Display: Toggles between structured view and raw view -->
+                      <div v-if="!showRawResult[log.timestamp]" class="result-structured">
+                        <!-- Interview Result Component -->
+                        <template v-if="log.details?.tool_name === 'interview_agents'">
+                          <InterviewDisplay :result="parseInterview(log.details.result)" :result-length="log.details?.result_length" />
+                        </template>
+                        <!-- Insight Forge Result Component -->
+                        <template v-else-if="log.details?.tool_name === 'insight_forge'">
+                          <InsightDisplay :result="parseInsightForge(log.details.result)" :result-length="log.details?.result_length" />
+                        </template>
+                        <!-- Panorama Search Result Component -->
+                        <template v-else-if="log.details?.tool_name === 'panorama_search'">
+                          <PanoramaDisplay :result="parsePanorama(log.details.result)" :result-length="log.details?.result_length" />
+                        </template>
+                        <!-- Quick Search Result Component -->
+                        <template v-else-if="log.details?.tool_name === 'quick_search'">
+                          <QuickSearchDisplay :result="parseQuickSearch(log.details.result)" :result-length="log.details?.result_length" />
+                        </template>
+                        <!-- Fallback: Raw Preview -->
+                        <template v-else>
+                          <pre class="raw-preview">{{ truncateText(log.details?.result, 300) }}</pre>
+                        </template>
+                      </div>
+                      
+                      <!-- Raw Result View: Shows raw text if toggled -->
+                      <div v-else class="result-raw">
+                        <pre>{{ log.details?.result }}</pre>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- LLM Response: Shows iteration info and final answer status -->
+                  <template v-if="log.action === 'llm_response'">
+                    <div class="llm-meta">
+                      <span class="meta-tag">Iteration {{ log.details?.iteration }}</span>
+                      <span class="meta-tag" :class="{ active: log.details?.has_tool_calls }">
+                        Tools: {{ log.details?.has_tool_calls ? 'Yes' : 'No' }}
+                      </span>
+                      <span class="meta-tag" :class="{ active: log.details?.has_final_answer, 'final-answer': log.details?.has_final_answer }">
+                        Final: {{ log.details?.has_final_answer ? 'Yes' : 'No' }}
+                      </span>
+                    </div>
+                    <!-- Final Answer Hint -->
+                    <div v-if="log.details?.has_final_answer" class="final-answer-hint">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                      <span>Section "{{ log.section_title }}" content generated</span>
+                    </div>
+                    <!-- LLM Content: Expandable raw response -->
+                    <div v-if="expandedLogs.has(log.timestamp) && log.details?.response" class="llm-content">
+                      <pre>{{ log.details.response }}</pre>
+                    </div>
+                  </template>
+
+                  <!-- Report Complete: Final success banner -->
+                  <template v-if="log.action === 'report_complete'">
+                    <div class="complete-banner">
+                      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                      </svg>
+                      <span>Report Generation Complete</span>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Footer: Elapsed Time + Action Buttons (Toggle Expand/Raw View) -->
+                <div class="timeline-footer" v-if="log.elapsed_seconds || (log.action === 'tool_call' && log.details?.parameters) || log.action === 'tool_result' || (log.action === 'llm_response' && log.details?.response)">
+                  <span v-if="log.elapsed_seconds" class="elapsed-badge">+{{ log.elapsed_seconds.toFixed(1) }}s</span>
+                  <span v-else class="elapsed-placeholder"></span>
+                  
+                  <div class="footer-actions">
+                    <button v-if="log.action === 'tool_call' && log.details?.parameters" class="action-btn" @click.stop="toggleLogExpand(log)">
+                      {{ expandedLogs.has(log.timestamp) ? 'Hide Params' : 'Show Params' }}
+                    </button>
+                    <button v-if="log.action === 'tool_result'" class="action-btn" @click.stop="toggleRawResult(log.timestamp, $event)">
+                      {{ showRawResult[log.timestamp] ? 'Structured View' : 'Raw Output' }}
+                    </button>
+                    <button v-if="log.action === 'llm_response' && log.details?.response" class="action-btn" @click.stop="toggleLogExpand(log)">
+                      {{ expandedLogs.has(log.timestamp) ? 'Hide Response' : 'Show Response' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </TransitionGroup>
+
+          <!-- Empty State: Shown when no logs are present -->
+          <div v-if="agentLogs.length === 0 && !isComplete" class="workflow-empty">
+            <div class="empty-pulse"></div>
+            <span>Waiting for agent activity...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Console Logs: Raw system output -->
+    <div class="console-logs">
+      <div class="log-header">
+        <span class="log-title">CONSOLE OUTPUT</span>
+        <span class="log-id">{{ reportId || 'NO_REPORT' }}</span>
+      </div>
+      <div class="log-content" ref="logContent">
+        <div class="log-line" v-for="(log, idx) in consoleLogs" :key="idx">
+          <span class="log-msg" :class="getLogLevelClass(log)">{{ log }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
+import { useRouter } from 'vue-router'
+import { getAgentLog, getConsoleLog } from '../api/report'
+
+const router = useRouter()
+
+const props = defineProps({
+  reportId: String,
+  simulationId: String,
+  systemLogs: Array
+})
+
+const emit = defineEmits(['add-log', 'update-status'])
+
+// Navigation: Routes to the interaction page
+const goToInteraction = () => {
+  if (props.reportId) {
+    router.push({ name: 'Interaction', params: { reportId: props.reportId } })
+  }
+}
+
+// State: Reactive variables for storing component data
+const agentLogs = ref([]) // Stores structured agent logs
+const consoleLogs = ref([]) // Stores raw console logs
+const agentLogLine = ref(0) // Tracks the last fetched line number for agent logs
+const consoleLogLine = ref(0) // Tracks the last fetched line number for console logs
+const reportOutline = ref(null) // Stores the report outline structure
+const currentSectionIndex = ref(null) // Tracks which section is currently being processed
+const generatedSections = ref({}) // Stores completed section content by index
+const expandedContent = ref(new Set()) // Tracks expanded content sections
+const expandedLogs = ref(new Set()) // Tracks expanded log entries
+const collapsedSections = ref(new Set()) // Tracks collapsed report sections
+const isComplete = ref(false) // Flag for report completion status
+const startTime = ref(null) // Timestamp for when the report started
+const leftPanel = ref(null) // Template ref for the left panel container
+const rightPanel = ref(null) // Template ref for the right panel container
+const logContent = ref(null) // Template ref for the console log container
+const showRawResult = reactive({}) // Tracks whether to show raw results for specific timestamps
+
+// Toggle functions: Manage UI state for expanding/collapsing
+const toggleRawResult = (timestamp, event) => {
+  // Save button position relative to viewport to prevent scroll jump
+  const button = event?.target
+  const buttonRect = button?.getBoundingClientRect()
+  const buttonTopBeforeToggle = buttonRect?.top
+  
+  // Toggle state
+  showRawResult[timestamp] = !showRawResult[timestamp]
+  
+  // After DOM update, adjust scroll to keep button at same position
+  if (button && buttonTopBeforeToggle !== undefined && rightPanel.value) {
+    nextTick(() => {
+      const newButtonRect = button.getBoundingClientRect()
+      const buttonTopAfterToggle = newButtonRect.top
+      const scrollDelta = buttonTopAfterToggle - buttonTopBeforeToggle
+      rightPanel.value.scrollTop += scrollDelta
+    })
+  }
+}
+
+const toggleSectionContent = (idx) => {
+  if (!generatedSections.value[idx + 1]) return
+  const newSet = new Set(expandedContent.value)
+  if (newSet.has(idx)) {
+    newSet.delete(idx)
+  } else {
+    newSet.add(idx)
+  }
+  expandedContent.value = newSet
+}
+
+const toggleSectionCollapse = (idx) => {
+  // Only completed sections can be collapsed
+  if (!generatedSections.value[idx + 1]) return
+  const newSet = new Set(collapsedSections.value)
+  if (newSet.has(idx)) {
+    newSet.delete(idx)
+  } else {
+    newSet.add(idx)
+  }
+  collapsedSections.value = newSet
+}
+
+const toggleLogExpand = (log) => {
+  const newSet = new Set(expandedLogs.value)
+  if (newSet.has(log.timestamp)) {
+    newSet.delete(log.timestamp)
+  } else {
+    newSet.add(log.timestamp)
+  }
+  expandedLogs.value = newSet
+}
+
+const isLogCollapsed = (log) => {
+  // Certain log types are collapsed by default
+  if (['tool_call', 'tool_result', 'llm_response'].includes(log.action)) {
+    return !expandedLogs.value.has(log.timestamp)
+  }
+  return false
+}
+
+// Tool configurations: Maps tool names to display properties
+const toolConfig = {
+  'insight_forge': {
+    name: 'Deep Insight',
+    color: 'purple',
+    icon: 'lightbulb'
+  },
+  'panorama_search': {
+    name: 'Panorama Search',
+    color: 'blue',
+    icon: 'globe'
+  },
+  'interview_agents': {
+    name: 'Agent Interview',
+    color: 'green',
+    icon: 'users'
+  },
+  'quick_search': {
+    name: 'Quick Search',
+    color: 'orange',
+    icon: 'zap'
+  },
+  'get_graph_statistics': {
+    name: 'Graph Stats',
+    color: 'cyan',
+    icon: 'chart'
+  },
+  'get_entities_by_type': {
+    name: 'Entity Query',
+    color: 'pink',
+    icon: 'database'
+  }
+}
+
+const getToolDisplayName = (toolName) => toolConfig[toolName]?.name || toolName
+const getToolColor = (toolName) => toolConfig[toolName]?.color || 'gray'
+const getToolIcon = (toolName) => toolConfig[toolName]?.icon || 'tool'
+
+// Parse functions: Extract structured data from raw text results
+
+// Parses 'insight_forge' tool result
+const parseInsightForge = (text) => {
+  const result = {
+    query: '',
+    simulationRequirement: '',
+    stats: { facts: 0, entities: 0, relationships: 0 },
+    subQueries: [],
+    facts: [],
+    entities: [],
+    relations: []
+  }
+  
+  try {
+    // Extract analysis question
+    const queryMatch = text.match(/Analysis Question:\s*(.+?)(?:\n|$)/)
+    if (queryMatch) result.query = queryMatch[1].trim()
+    
+    // Extract prediction scenario
+    const reqMatch = text.match(/Prediction Scenario:\s*(.+?)(?:\n|$)/)
+    if (reqMatch) result.simulationRequirement = reqMatch[1].trim()
+    
+    // Extract stats - match "Related Prediction Facts: X" format
+    const factMatch = text.match(/Related Prediction Facts:\s*(\d+)/)
+    const entityMatch = text.match(/Entities Involved:\s*(\d+)/)
+    const relMatch = text.match(/Relationship Chains:\s*(\d+)/)
+    if (factMatch) result.stats.facts = parseInt(factMatch[1])
+    if (entityMatch) result.stats.entities = parseInt(entityMatch[1])
+    if (relMatch) result.stats.relationships = parseInt(relMatch[1])
+    
+    // Extract sub-questions - full extraction, no count limit
+    const subQSection = text.match(/### Sub-questions Analyzed\n([\s\S]*?)(?=\n###|$)/)
+    if (subQSection) {
+      const lines = subQSection[1].split('\n').filter(l => l.match(/^\d+\./))
+      result.subQueries = lines.map(l => l.replace(/^\d+\.\s*/, '').trim()).filter(Boolean)
+    }
+    
+    // Extract key facts - full extraction, no count limit
+    const factsSection = text.match(/### \[Key Facts\][\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
+    if (factsSection) {
+      const lines = factsSection[1].split('\n').filter(l => l.match(/^\d+\./))
+      result.facts = lines.map(l => {
+        const match = l.match(/^\d+\.\s*"?(.+?)"?\s*$/)
+        return match ? match[1].replace(/^"|"$/g, '').trim() : l.replace(/^\d+\.\s*/, '').trim()
+      }).filter(Boolean)
+    }
+    
+    // Extract core entities - full extraction including summary and related fact count
+    const entitySection = text.match(/### \[Core Entities\]\n([\s\S]*?)(?=\n###|$)/)
+    if (entitySection) {
+      const entityText = entitySection[1]
+      const entityBlocks = entityText.split(/\n(?=- \*\*)/).filter(b => b.trim().startsWith('- **'))
+      result.entities = entityBlocks.map(block => {
+        const nameMatch = block.match(/^-\s*\*\*(.+?)\*\*\s*\((.+?)\)/)
+        const summaryMatch = block.match(/Summary:\s*"?(.+?)"?(?:\n|$)/)
+        const relatedMatch = block.match(/Related Facts:\s*(\d+)/)
+        return {
+          name: nameMatch ? nameMatch[1].trim() : '',
+          type: nameMatch ? nameMatch[2].trim() : '',
+          summary: summaryMatch ? summaryMatch[1].trim() : '',
+          relatedFactsCount: relatedMatch ? parseInt(relatedMatch[1]) : 0
+        }
+      }).filter(e => e.name)
+    }
+    
+    // Extract relationship chains - full extraction, no count limit
+    const relSection = text.match(/### \[Relationship Chains\]\n([\s\S]*?)(?=\n###|$)/)
+    if (relSection) {
+      const lines = relSection[1].split('\n').filter(l => l.trim().startsWith('-'))
+      result.relations = lines.map(l => {
+        const match = l.match(/^-\s*(.+?)\s*--\[(.+?)\]-->\s*(.+)$/)
+        if (match) return { source: match[1].trim(), relation: match[2].trim(), target: match[3].trim() }
+        return null
+      }).filter(Boolean)
+    }
+  } catch (e) {
+    console.warn('Parse insight_forge failed:', e)
+  }
+  
+  return result
+}
+
+// Parses 'panorama_search' tool result
+const parsePanorama = (text) => {
+  const result = {
+    query: '',
+    stats: { nodes: 0, edges: 0, activeFacts: 0, historicalFacts: 0 },
+    activeFacts: [],
+    historicalFacts: [],
+    entities: []
+  }
+  
+  try {
+    // Extract query
+    const queryMatch = text.match(/Query:\s*(.+?)(?:\n|$)/)
+    if (queryMatch) result.query = queryMatch[1].trim()
+    
+    // Extract stats
+    const nodesMatch = text.match(/Total Nodes:\s*(\d+)/)
+    const edgesMatch = text.match(/Total Edges:\s*(\d+)/)
+    const activeMatch = text.match(/Active Facts:\s*(\d+)/)
+    const histMatch = text.match(/Historical\/Expired Facts:\s*(\d+)/)
+    if (nodesMatch) result.stats.nodes = parseInt(nodesMatch[1])
+    if (edgesMatch) result.stats.edges = parseInt(edgesMatch[1])
+    if (activeMatch) result.stats.activeFacts = parseInt(activeMatch[1])
+    if (histMatch) result.stats.historicalFacts = parseInt(histMatch[1])
+    
+    // Extract active facts - full extraction, no count limit
+    const activeSection = text.match(/### \[Active Facts\][\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
+    if (activeSection) {
+      const lines = activeSection[1].split('\n').filter(l => l.match(/^\d+\./))
+      result.activeFacts = lines.map(l => l.replace(/^\d+\.\s*/, '').replace(/^"|"$/g, '').trim()).filter(Boolean)
+    }
+    
+    // Extract historical/expired facts - full extraction, no count limit
+    const histSection = text.match(/### \[Historical\/Expired Facts\][\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
+    if (histSection) {
+      const lines = histSection[1].split('\n').filter(l => l.match(/^\d+\./))
+      result.historicalFacts = lines.map(l => l.replace(/^\d+\.\s*/, '').replace(/^"|"$/g, '').trim()).filter(Boolean)
+    }
+    
+    // Extract entities involved - full extraction, no count limit
+    const entitySection = text.match(/### \[Entities Involved\]\n([\s\S]*?)(?=\n###|$)/)
+    if (entitySection) {
+      const lines = entitySection[1].split('\n').filter(l => l.trim().startsWith('-'))
+      result.entities = lines.map(l => {
+        const match = l.match(/^-\s*\*\*(.+?)\*\*\s*\((.+?)\)/)
+        if (match) return { name: match[1].trim(), type: match[2].trim() }
+        return null
+      }).filter(Boolean)
+    }
+  } catch (e) {
+    console.warn('Parse panorama failed:', e)
+  }
+  
+  return result
+}
+
+// Parses 'interview_agents' tool result
+const parseInterview = (text) => {
+  const result = {
+    topic: '',
+    agentCount: '',
+    successCount: 0,
+    totalCount: 0,
+    selectionReason: '',
+    interviews: [],
+    summary: ''
+  }
+  
+  try {
+    // Extract interview topic
+    const topicMatch = text.match(/\*\*Interview Topic:\*\*\s*(.+?)(?:\n|$)/)
+    if (topicMatch) result.topic = topicMatch[1].trim()
+    
+    // Extract interview count (e.g. "5 / 9 simulated agents")
+    const countMatch = text.match(/\*\*Interviewed:\*\*\s*(\d+)\s*\/\s*(\d+)/)
+    if (countMatch) {
+      result.successCount = parseInt(countMatch[1])
+      result.totalCount = parseInt(countMatch[2])
+      result.agentCount = `${countMatch[1]} / ${countMatch[2]}`
+    }
+    
+    // Extract selection reason for interviewees
+    const reasonMatch = text.match(/### Selection Reason\n([\s\S]*?)(?=\n---\n|\n### Interview Record)/)
+    if (reasonMatch) result.selectionReason = reasonMatch[1].trim()
+    
+    // Parse individual reasons (nested helper function)
+    const parseIndividualReasons = (reasonText) => {
+      const reasons = {}
+      if (!reasonText) return reasons
+      
+      const lines = reasonText.split(/\n+/)
+      let currentName = null
+      let currentReason = []
+      
+      for (const line of lines) {
+        let headerMatch = null
+        let name = null
+        let reasonStart = null
+        
+        // Regex matching for name headers
+        headerMatch = line.match(/^\d+\.\s*\*\*([^*（(]+)(?:[（(]index\s*=?\s*\d+[)）])?\*\*[：:]\s*(.*)/)
+        if (headerMatch) {
+          name = headerMatch[1].trim()
+          reasonStart = headerMatch[2]
+        }
+        
+        if (!headerMatch) {
+          headerMatch = line.match(/^-\s*Selected:?\s*([^（(]+)(?:[（(]index\s*=?\s*\d+[)）])?[：:]\s*(.*)/)
+          if (headerMatch) {
+            name = headerMatch[1].trim()
+            reasonStart = headerMatch[2]
+          }
+        }
+        
+        if (!headerMatch) {
+          headerMatch = line.match(/^-\s*\*\*([^*（(]+)(?:[（(]index\s*=?\s*\d+[)）])?\*\*[：:]\s*(.*)/)
+          if (headerMatch) {
+            name = headerMatch[1].trim()
+            reasonStart = headerMatch[2]
+          }
+        }
+        
+        // Accumulate reason text
+        if (name) {
+          if (currentName && currentReason.length > 0) {
+            reasons[currentName] = currentReason.join(' ').trim()
+          }
+          currentName = name
+          currentReason = reasonStart ? [reasonStart.trim()] : []
+        } else if (currentName && line.trim() && !line.match(/^Not Selected|^In summary|^Final selection/)) {
+          currentReason.push(line.trim())
+        }
+      }
+      
+      if (currentName && currentReason.length > 0) {
+        reasons[currentName] = currentReason.join(' ').trim()
+      }
+      
+      return reasons
+    }
+    
+    const individualReasons = parseIndividualReasons(result.selectionReason)
+    
+    // Extract each interview record
+    const interviewBlocks = text.split(/#### Interview #\d+:/).slice(1)
+    
+    interviewBlocks.forEach((block, index) => {
+      const interview = {
+        num: index + 1,
+        title: '',
+        name: '',
+        role: '',
+        bio: '',
+        selectionReason: '',
+        questions: [],
+        twitterAnswer: '',
+        redditAnswer: '',
+        quotes: []
+      }
+      
+      // Extract title
+      const titleMatch = block.match(/^(.+?)\n/)
+      if (titleMatch) interview.title = titleMatch[1].trim()
+      
+      // Extract name and role
+      const nameRoleMatch = block.match(/\*\*(.+?)\*\*\s*\((.+?)\)/)
+      if (nameRoleMatch) {
+        interview.name = nameRoleMatch[1].trim()
+        interview.role = nameRoleMatch[2].trim()
+        interview.selectionReason = individualReasons[interview.name] || ''
+      }
+      
+      // Extract bio
+      const bioMatch = block.match(/_Bio:\s*([\s\S]*?)_\n/)
+      if (bioMatch) interview.bio = bioMatch[1].trim().replace(/\.\.\.$/, '...')
+      
+      // Extract question list
+      const qMatch = block.match(/\*\*Q:\*\*\s*([\s\S]*?)(?=\n\n\*\*A:\*\*|\*\*A:\*\*)/)
+      if (qMatch) {
+        const qText = qMatch[1].trim()
+        const questions = qText.split(/\n\d+\.\s+/).filter(q => q.trim())
+        if (questions.length > 0) {
+          const firstQ = qText.match(/^1\.\s+(.+)/)
+          if (firstQ) {
+            interview.questions = [firstQ[1].trim(), ...questions.slice(1).map(q => q.trim())]
+          } else {
+            interview.questions = questions.map(q => q.trim())
+          }
+        }
+      }
+      
+      // Extract answers - split by platform
+      const answerMatch = block.match(/\*\*A:\*\*\s*([\s\S]*?)(?=\*\*Key Quotes|$)/)
+      if (answerMatch) {
+        const answerText = answerMatch[1].trim()
+        
+        const twitterMatch = answerText.match(/\[Platform 1 Answer\]\n?([\s\S]*?)(?=\[Platform 2 Answer\]|$)/)
+        const redditMatch = answerText.match(/\[Platform 2 Answer\]\n?([\s\S]*?)$/)
+        
+        if (twitterMatch) interview.twitterAnswer = twitterMatch[1].trim()
+        if (redditMatch) interview.redditAnswer = redditMatch[1].trim()
+        
+        // Platform fallback logic
+        if (!twitterMatch && redditMatch) {
+          if (interview.redditAnswer && interview.redditAnswer !== '(No reply on this platform)') {
+            interview.twitterAnswer = interview.redditAnswer
+          }
+        } else if (twitterMatch && !redditMatch) {
+          if (interview.twitterAnswer && interview.twitterAnswer !== '(No reply on this platform)') {
+            interview.redditAnswer = interview.twitterAnswer
+          }
+        } else if (!twitterMatch && !redditMatch) {
+          interview.twitterAnswer = answerText
+        }
+      }
+      
+      // Extract key quotes
+      const quotesMatch = block.match(/\*\*Key Quotes:\*\*\n([\s\S]*?)(?=\n---|\n####|$)/)
+      if (quotesMatch) {
+        const quotesText = quotesMatch[1]
+        let quoteMatches = quotesText.match(/> "([^"]+)"/g)
+        if (!quoteMatches) {
+          quoteMatches = quotesText.match(/> [\u201C""]([^\u201D""]+)[\u201D""]/g)
+        }
+        if (quoteMatches) {
+          interview.quotes = quoteMatches
+            .map(q => q.replace(/^> [\u201C""]|[\u201D""]$/g, '').trim())
+            .filter(q => q)
+        }
+      }
+      
+      if (interview.name || interview.title) result.interviews.push(interview)
+    })
+    
+    // Extract interview summary
+    const summaryMatch = text.match(/### Interview Summary & Key Insights\n([\s\S]*?)$/)
+    if (summaryMatch) result.summary = summaryMatch[1].trim()
+  } catch (e) {
+    console.warn('Parse interview failed:', e)
+  }
+  
+  return result
+}
+
+// Parses 'quick_search' tool result
+const parseQuickSearch = (text) => {
+  const result = { query: '', count: 0, facts: [], edges: [], nodes: [] }
+  
+  try {
+    const queryMatch = text.match(/Search Query:\s*(.+?)(?:\n|$)/)
+    if (queryMatch) result.query = queryMatch[1].trim()
+    
+    const countMatch = text.match(/Found\s*(\d+)\s*results/)
+    if (countMatch) result.count = parseInt(countMatch[1])
+    
+    const factsSection = text.match(/### Related Facts:\n([\s\S]*)$/)
+    if (factsSection) {
+      const lines = factsSection[1].split('\n').filter(l => l.match(/^\d+\./))
+      result.facts = lines.map(l => l.replace(/^\d+\.\s*/, '').trim()).filter(Boolean)
+    }
+    
+    const edgesSection = text.match(/### Related Edges:\n([\s\S]*?)(?=\n###|$)/)
+    if (edgesSection) {
+      const lines = edgesSection[1].split('\n').filter(l => l.trim().startsWith('-'))
+      result.edges = lines.map(l => {
+        const match = l.match(/^-\s*(.+?)\s*--\[(.+?)\]-->\s*(.+)$/)
+        if (match) return { source: match[1].trim(), relation: match[2].trim(), target: match[3].trim() }
+        return null
+      }).filter(Boolean)
+    }
+    
+    const nodesSection = text.match(/### Related Nodes:\n([\s\S]*?)(?=\n###|$)/)
+    if (nodesSection) {
+      const lines = nodesSection[1].split('\n').filter(l => l.trim().startsWith('-'))
+      result.nodes = lines.map(l => {
+        const match = l.match(/^-\s*\*\*(.+?)\*\*\s*\((.+?)\)/)
+        if (match) return { name: match[1].trim(), type: match[2].trim() }
+        const simpleMatch = l.match(/^-\s*(.+)$/)
+        if (simpleMatch) return { name: simpleMatch[1].trim(), type: '' }
+        return null
+      }).filter(Boolean)
+    }
+  } catch (e) {
+    console.warn('Parse quick_search failed:', e)
+  }
+  
+  return result
+}
+
+// ========== Sub Components: Defined as functional components using h() ==========
+
+// Insight Display Component: Renders 'insight_forge' results
+const InsightDisplay = {
+  props: ['result', 'resultLength'],
+  setup(props) {
+    const activeTab = ref('facts')
+    const expandedFacts = ref(false)
+    const expandedEntities = ref(false)
+    const expandedRelations = ref(false)
+    const INITIAL_SHOW_COUNT = 5
+    
+    const formatSize = (length) => {
+      if (!length) return ''
+      return length >= 1000 ? `${(length / 1000).toFixed(1)}k chars` : `${length} chars`
+    }
+    
+    // Render function using h() for programmatic DOM creation
+    return () => h('div', { class: 'insight-display' }, [
+      h('div', { class: 'insight-header' }, [
+        h('div', { class: 'header-main' }, [
+          h('div', { class: 'header-title' }, 'Deep Insight'),
+          h('div', { class: 'header-stats' }, [
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.stats.facts || props.result.facts.length),
+              h('span', { class: 'stat-label' }, 'Facts')
+            ]),
+            h('span', { class: 'stat-divider' }, '/'),
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.stats.entities || props.result.entities.length),
+              h('span', { class: 'stat-label' }, 'Entities')
+            ]),
+            h('span', { class: 'stat-divider' }, '/'),
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.stats.relationships || props.result.relations.length),
+              h('span', { class: 'stat-label' }, 'Relations')
+            ]),
+            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
+          ])
+        ]),
+        props.result.query && h('div', { class: 'header-topic' }, props.result.query),
+        props.result.simulationRequirement && h('div', { class: 'header-scenario' }, [
+          h('span', { class: 'scenario-label' }, 'Prediction Scenario: '),
+          h('span', { class: 'scenario-text' }, props.result.simulationRequirement)
+        ])
+      ]),
+      
+      // Tabs for switching between Facts, Entities, Relations, Sub-queries
+      h('div', { class: 'insight-tabs' }, [
+        h('button', { class: ['insight-tab', { active: activeTab.value === 'facts' }], onClick: () => { activeTab.value = 'facts' } }, [
+          h('span', { class: 'tab-label' }, `Current Key Memories (${props.result.facts.length})`)
+        ]),
+        h('button', { class: ['insight-tab', { active: activeTab.value === 'entities' }], onClick: () => { activeTab.value = 'entities' } }, [
+          h('span', { class: 'tab-label' }, `Core Entities (${props.result.entities.length})`)
+        ]),
+        h('button', { class: ['insight-tab', { active: activeTab.value === 'relations' }], onClick: () => { activeTab.value = 'relations' } }, [
+          h('span', { class: 'tab-label' }, `Relationship Chains (${props.result.relations.length})`)
+        ]),
+        props.result.subQueries.length > 0 && h('button', { class: ['insight-tab', { active: activeTab.value === 'subqueries' }], onClick: () => { activeTab.value = 'subqueries' } }, [
+          h('span', { class: 'tab-label' }, `Sub-questions (${props.result.subQueries.length})`)
+        ])
+      ]),
+      
+      h('div', { class: 'insight-content' }, [
+        // Facts Tab Content
+        activeTab.value === 'facts' && props.result.facts.length > 0 && h('div', { class: 'facts-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Latest key facts associated in temporal memory'),
+            h('span', { class: 'panel-count' }, `${props.result.facts.length} total`)
+          ]),
+          h('div', { class: 'facts-list' },
+            (expandedFacts.value ? props.result.facts : props.result.facts.slice(0, INITIAL_SHOW_COUNT)).map((fact, i) => 
+              h('div', { class: 'fact-item', key: i }, [
+                h('span', { class: 'fact-number' }, i + 1),
+                h('div', { class: 'fact-content' }, fact)
+              ])
+            )
+          ),
+          props.result.facts.length > INITIAL_SHOW_COUNT && h('button', { class: 'expand-btn', onClick: () => { expandedFacts.value = !expandedFacts.value } },
+            expandedFacts.value ? `Collapse ▲` : `Expand all ${props.result.facts.length} ▼`)
+        ]),
+        
+        // Entities Tab Content
+        activeTab.value === 'entities' && props.result.entities.length > 0 && h('div', { class: 'entities-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Core Entities'),
+            h('span', { class: 'panel-count' }, `${props.result.entities.length} total`)
+          ]),
+          h('div', { class: 'entities-grid' },
+            (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 12)).map((entity, i) => 
+              h('div', { class: 'entity-tag', key: i, title: entity.summary || '' }, [
+                h('span', { class: 'entity-name' }, entity.name),
+                h('span', { class: 'entity-type' }, entity.type),
+                entity.relatedFactsCount > 0 && h('span', { class: 'entity-fact-count' }, `${entity.relatedFactsCount} facts`)
+              ])
+            )
+          ),
+          props.result.entities.length > 12 && h('button', { class: 'expand-btn', onClick: () => { expandedEntities.value = !expandedEntities.value } },
+            expandedEntities.value ? `Collapse ▲` : `Expand all ${props.result.entities.length} ▼`)
+        ]),
+        
+        // Relations Tab Content
+        activeTab.value === 'relations' && props.result.relations.length > 0 && h('div', { class: 'relations-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Relationship Chains'),
+            h('span', { class: 'panel-count' }, `${props.result.relations.length} total`)
+          ]),
+          h('div', { class: 'relations-list' },
+            (expandedRelations.value ? props.result.relations : props.result.relations.slice(0, INITIAL_SHOW_COUNT)).map((rel, i) => 
+              h('div', { class: 'relation-item', key: i }, [
+                h('span', { class: 'rel-source' }, rel.source),
+                h('span', { class: 'rel-arrow' }, [
+                  h('span', { class: 'rel-line' }),
+                  h('span', { class: 'rel-label' }, rel.relation),
+                  h('span', { class: 'rel-line' })
+                ]),
+                h('span', { class: 'rel-target' }, rel.target)
+              ])
+            )
+          ),
+          props.result.relations.length > INITIAL_SHOW_COUNT && h('button', { class: 'expand-btn', onClick: () => { expandedRelations.value = !expandedRelations.value } },
+            expandedRelations.value ? `Collapse ▲` : `Expand all ${props.result.relations.length} ▼`)
+        ]),
+        
+        // Sub-queries Tab Content
+        activeTab.value === 'subqueries' && props.result.subQueries.length > 0 && h('div', { class: 'subqueries-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Sub-questions generated via drift query analysis'),
+            h('span', { class: 'panel-count' }, `${props.result.subQueries.length} total`)
+          ]),
+          h('div', { class: 'subqueries-list' },
+            props.result.subQueries.map((sq, i) => 
+              h('div', { class: 'subquery-item', key: i }, [
+                h('span', { class: 'subquery-number' }, `Q${i + 1}`),
+                h('div', { class: 'subquery-text' }, sq)
+              ])
+            )
+          )
+        ]),
+        
+        // Empty states
+        activeTab.value === 'facts' && props.result.facts.length === 0 && h('div', { class: 'empty-state' }, 'No current key memories'),
+        activeTab.value === 'entities' && props.result.entities.length === 0 && h('div', { class: 'empty-state' }, 'No core entities'),
+        activeTab.value === 'relations' && props.result.relations.length === 0 && h('div', { class: 'empty-state' }, 'No relationship chains')
+      ])
+    ])
+  }
+}
+
+// Panorama Display Component: Renders 'panorama_search' results
+const PanoramaDisplay = {
+  props: ['result', 'resultLength'],
+  setup(props) {
+    const activeTab = ref('active')
+    const expandedActive = ref(false)
+    const expandedHistorical = ref(false)
+    const expandedEntities = ref(false)
+    const INITIAL_SHOW_COUNT = 5
+    
+    const formatSize = (length) => {
+      if (!length) return ''
+      return length >= 1000 ? `${(length / 1000).toFixed(1)}k chars` : `${length} chars`
+    }
+    
+    return () => h('div', { class: 'panorama-display' }, [
+      h('div', { class: 'panorama-header' }, [
+        h('div', { class: 'header-main' }, [
+          h('div', { class: 'header-title' }, 'Panorama Search'),
+          h('div', { class: 'header-stats' }, [
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.stats.nodes),
+              h('span', { class: 'stat-label' }, 'Nodes')
+            ]),
+            h('span', { class: 'stat-divider' }, '/'),
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.stats.edges),
+              h('span', { class: 'stat-label' }, 'Edges')
+            ]),
+            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
+          ])
+        ]),
+        props.result.query && h('div', { class: 'header-topic' }, props.result.query)
+      ]),
+      
+      h('div', { class: 'panorama-tabs' }, [
+        h('button', { class: ['panorama-tab', { active: activeTab.value === 'active' }], onClick: () => { activeTab.value = 'active' } }, [
+          h('span', { class: 'tab-label' }, `Active Memories (${props.result.activeFacts.length})`)
+        ]),
+        h('button', { class: ['panorama-tab', { active: activeTab.value === 'historical' }], onClick: () => { activeTab.value = 'historical' } }, [
+          h('span', { class: 'tab-label' }, `Historical Memories (${props.result.historicalFacts.length})`)
+        ]),
+        h('button', { class: ['panorama-tab', { active: activeTab.value === 'entities' }], onClick: () => { activeTab.value = 'entities' } }, [
+          h('span', { class: 'tab-label' }, `Entities Involved (${props.result.entities.length})`)
+        ])
+      ]),
+      
+      h('div', { class: 'panorama-content' }, [
+        activeTab.value === 'active' && h('div', { class: 'facts-panel active-facts' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Active Memories'),
+            h('span', { class: 'panel-count' }, `${props.result.activeFacts.length} total`)
+          ]),
+          props.result.activeFacts.length > 0 ? h('div', { class: 'facts-list' },
+            (expandedActive.value ? props.result.activeFacts : props.result.activeFacts.slice(0, INITIAL_SHOW_COUNT)).map((fact, i) => 
+              h('div', { class: 'fact-item active', key: i }, [
+                h('span', { class: 'fact-number' }, i + 1),
+                h('div', { class: 'fact-content' }, fact)
+              ])
+            )
+          ) : h('div', { class: 'empty-state' }, 'No active memories'),
+          props.result.activeFacts.length > INITIAL_SHOW_COUNT && h('button', { class: 'expand-btn', onClick: () => { expandedActive.value = !expandedActive.value } },
+            expandedActive.value ? `Collapse ▲` : `Expand all ${props.result.activeFacts.length} ▼`)
+        ]),
+        
+        activeTab.value === 'historical' && h('div', { class: 'facts-panel historical-facts' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Historical Memories'),
+            h('span', { class: 'panel-count' }, `${props.result.historicalFacts.length} total`)
+          ]),
+          props.result.historicalFacts.length > 0 ? h('div', { class: 'facts-list' },
+            (expandedHistorical.value ? props.result.historicalFacts : props.result.historicalFacts.slice(0, INITIAL_SHOW_COUNT)).map((fact, i) => 
+              h('div', { class: 'fact-item historical', key: i }, [
+                h('span', { class: 'fact-number' }, i + 1),
+                h('div', { class: 'fact-content' }, [
+                  (() => {
+                    const timeMatch = fact.match(/^\[(.+?)\]\s*(.*)$/)
+                    if (timeMatch) return [h('span', { class: 'fact-time' }, timeMatch[1]), h('span', { class: 'fact-text' }, timeMatch[2])]
+                    return h('span', { class: 'fact-text' }, fact)
+                  })()
+                ])
+              ])
+            )
+          ) : h('div', { class: 'empty-state' }, 'No historical memories'),
+          props.result.historicalFacts.length > INITIAL_SHOW_COUNT && h('button', { class: 'expand-btn', onClick: () => { expandedHistorical.value = !expandedHistorical.value } },
+            expandedHistorical.value ? `Collapse ▲` : `Expand all ${props.result.historicalFacts.length} ▼`)
+        ]),
+        
+        activeTab.value === 'entities' && h('div', { class: 'entities-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Entities Involved'),
+            h('span', { class: 'panel-count' }, `${props.result.entities.length} total`)
+          ]),
+          props.result.entities.length > 0 ? h('div', { class: 'entities-grid' },
+            (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 8)).map((entity, i) => 
+              h('div', { class: 'entity-tag', key: i }, [
+                h('span', { class: 'entity-name' }, entity.name),
+                entity.type && h('span', { class: 'entity-type' }, entity.type)
+              ])
+            )
+          ) : h('div', { class: 'empty-state' }, 'No entities involved'),
+          props.result.entities.length > 8 && h('button', { class: 'expand-btn', onClick: () => { expandedEntities.value = !expandedEntities.value } },
+            expandedEntities.value ? `Collapse ▲` : `Expand all ${props.result.entities.length} ▼`)
+        ])
+      ])
+    ])
+  }
+}
+
+// Interview Display Component: Renders 'interview_agents' results
+const InterviewDisplay = {
+  props: ['result', 'resultLength'],
+  setup(props) {
+    const formatSize = (length) => {
+      if (!length) return ''
+      return length >= 1000 ? `${(length / 1000).toFixed(1)}k chars` : `${length} chars`
+    }
+    
+    const cleanQuoteText = (text) => {
+      if (!text) return ''
+      return text.replace(/^\s*\d+[\.\、\)）]\s*/, '').trim()
+    }
+    
+    const activeIndex = ref(0) // Tracks which interview is currently selected
+    const expandedAnswers = ref(new Set())
+    const platformTabs = reactive({})
+    
+    // Get/Set platform tab state for specific question
+    const getPlatformTab = (agentIdx, qIdx) => platformTabs[`${agentIdx}-${qIdx}`] || 'twitter'
+    const setPlatformTab = (agentIdx, qIdx, platform) => { platformTabs[`${agentIdx}-${qIdx}`] = platform }
+    
+    const toggleAnswer = (key) => {
+      const newSet = new Set(expandedAnswers.value)
+      if (newSet.has(key)) newSet.delete(key)
+      else newSet.add(key)
+      expandedAnswers.value = newSet
+    }
+    
+    const formatAnswer = (text, expanded) => {
+      if (!text) return ''
+      if (expanded || text.length <= 400) return text
+      return text.substring(0, 400) + '...'
+    }
+    
+    const isPlaceholderText = (text) => {
+      if (!text) return true
+      const t = text.trim()
+      return t === '(No reply on this platform)' || t === '[No reply]'
+    }
+
+    // Helper to split answer text by question numbers
+    const splitAnswerByQuestions = (answerText, questionCount) => {
+      if (!answerText || questionCount <= 0) return [answerText]
+      if (isPlaceholderText(answerText)) return ['']
+
+      let matches = []
+      let match
+
+      const cnPattern = /(?:^|[\r\n]+)Question(\d+)[：:]\s*/g
+      while ((match = cnPattern.exec(answerText)) !== null) {
+        matches.push({ num: parseInt(match[1]), index: match.index, fullMatch: match[0] })
+      }
+
+      if (matches.length === 0) {
+        const numPattern = /(?:^|[\r\n]+)(\d+)\.\s+/g
+        while ((match = numPattern.exec(answerText)) !== null) {
+          matches.push({ num: parseInt(match[1]), index: match.index, fullMatch: match[0] })
+        }
+      }
+
+      if (matches.length <= 1) {
+        const cleaned = answerText.replace(/^Question\d+[：:]\s*/, '').replace(/^\d+\.\s+/, '').trim()
+        return [cleaned || answerText]
+      }
+
+      const parts = []
+      for (let i = 0; i < matches.length; i++) {
+        const current = matches[i]
+        const next = matches[i + 1]
+        const startIdx = current.index + current.fullMatch.length
+        const endIdx = next ? next.index : answerText.length
+        let part = answerText.substring(startIdx, endIdx).trim().replace(/[\r\n]+$/, '').trim()
+        parts.push(part)
+      }
+
+      return parts.length > 0 && parts.some(p => p) ? parts : [answerText]
+    }
+    
+    // Helper to get answer for specific question and platform
+    const getAnswerForQuestion = (interview, qIdx, platform) => {
+      const answer = platform === 'twitter' ? interview.twitterAnswer : (interview.redditAnswer || interview.twitterAnswer)
+      if (!answer || isPlaceholderText(answer)) return answer || ''
+      const questionCount = interview.questions?.length || 1
+      const answers = splitAnswerByQuestions(answer, questionCount)
+      if (answers.length > 1 && qIdx < answers.length) return answers[qIdx] || ''
+      return qIdx === 0 ? answer : ''
+    }
+    
+    const hasMultiplePlatforms = (interview, qIdx) => {
+      if (!interview.twitterAnswer || !interview.redditAnswer) return false
+      const twitterAnswer = getAnswerForQuestion(interview, qIdx, 'twitter')
+      const redditAnswer = getAnswerForQuestion(interview, qIdx, 'reddit')
+      return !isPlaceholderText(twitterAnswer) && !isPlaceholderText(redditAnswer) && twitterAnswer !== redditAnswer
+    }
+    
+    return () => h('div', { class: 'interview-display' }, [
+      h('div', { class: 'interview-header' }, [
+        h('div', { class: 'header-main' }, [
+          h('div', { class: 'header-title' }, 'Agent Interview'),
+          h('div', { class: 'header-stats' }, [
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.successCount || props.result.interviews.length),
+              h('span', { class: 'stat-label' }, 'Interviewed')
+            ]),
+            props.result.totalCount > 0 && h('span', { class: 'stat-divider' }, '/'),
+            props.result.totalCount > 0 && h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.totalCount),
+              h('span', { class: 'stat-label' }, 'Total')
+            ]),
+            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
+          ])
+        ]),
+        props.result.topic && h('div', { class: 'header-topic' }, props.result.topic)
+      ]),
+      
+      // Agent Tabs: List of interviewees
+      props.result.interviews.length > 0 && h('div', { class: 'agent-tabs' }, 
+        props.result.interviews.map((interview, i) => h('button', {
+          class: ['agent-tab', { active: activeIndex.value === i }],
+          key: i,
+          onClick: () => { activeIndex.value = i }
+        }, [
+          h('span', { class: 'tab-avatar' }, interview.name ? interview.name.charAt(0) : (i + 1)),
+          h('span', { class: 'tab-name' }, interview.title || interview.name || `Agent ${i + 1}`)
+        ]))
+      ),
+      
+      // Interview Detail View
+      props.result.interviews.length > 0 && h('div', { class: 'interview-detail' }, [
+        h('div', { class: 'agent-profile' }, [
+          h('div', { class: 'profile-avatar' }, props.result.interviews[activeIndex.value]?.name?.charAt(0) || 'A'),
+          h('div', { class: 'profile-info' }, [
+            h('div', { class: 'profile-name' }, props.result.interviews[activeIndex.value]?.name || 'Agent'),
+            h('div', { class: 'profile-role' }, props.result.interviews[activeIndex.value]?.role || ''),
+            props.result.interviews[activeIndex.value]?.bio && h('div', { class: 'profile-bio' }, props.result.interviews[activeIndex.value].bio)
+          ])
+        ]),
+        
+        props.result.interviews[activeIndex.value]?.selectionReason && h('div', { class: 'selection-reason' }, [
+          h('div', { class: 'reason-label' }, 'Selection Reason'),
+          h('div', { class: 'reason-content' }, props.result.interviews[activeIndex.value].selectionReason)
+        ]),
+        
+        // Q&A Thread
+        h('div', { class: 'qa-thread' }, 
+          (props.result.interviews[activeIndex.value]?.questions?.length > 0 
+            ? props.result.interviews[activeIndex.value].questions 
+            : [props.result.interviews[activeIndex.value]?.question || 'No question available']
+          ).map((question, qIdx) => {
+            const interview = props.result.interviews[activeIndex.value]
+            const currentPlatform = getPlatformTab(activeIndex.value, qIdx)
+            const answerText = getAnswerForQuestion(interview, qIdx, currentPlatform)
+            const hasDualPlatform = hasMultiplePlatforms(interview, qIdx)
+            const expandKey = `${activeIndex.value}-${qIdx}`
+            const isExpanded = expandedAnswers.value.has(expandKey)
+            const isPlaceholder = isPlaceholderText(answerText)
+
+            return h('div', { class: 'qa-pair', key: qIdx }, [
+              h('div', { class: 'qa-question' }, [
+                h('div', { class: 'qa-badge q-badge' }, `Q${qIdx + 1}`),
+                h('div', { class: 'qa-content' }, [
+                  h('div', { class: 'qa-sender' }, 'Interviewer'),
+                  h('div', { class: 'qa-text' }, question)
+                ])
+              ]),
+              answerText && h('div', { class: ['qa-answer', { 'answer-placeholder': isPlaceholder }] }, [
+                h('div', { class: 'qa-badge a-badge' }, `A${qIdx + 1}`),
+                h('div', { class: 'qa-content' }, [
+                  h('div', { class: 'qa-answer-header' }, [
+                    h('div', { class: 'qa-sender' }, interview?.name || 'Agent'),
+                    hasDualPlatform && h('div', { class: 'platform-switch' }, [
+                      h('button', { class: ['platform-btn', { active: currentPlatform === 'twitter' }], onClick: (e) => { e.stopPropagation(); setPlatformTab(activeIndex.value, qIdx, 'twitter') } }, [
+                        h('svg', { class: 'platform-icon', viewBox: '0 0 24 24', width: 12, height: 12, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }, [
+                          h('circle', { cx: '12', cy: '12', r: '10' }),
+                          h('line', { x1: '2', y1: '12', x2: '22', y2: '12' }),
+                          h('path', { d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' })
+                        ]),
+                        h('span', {}, 'World 1')
+                      ]),
+                      h('button', { class: ['platform-btn', { active: currentPlatform === 'reddit' }], onClick: (e) => { e.stopPropagation(); setPlatformTab(activeIndex.value, qIdx, 'reddit') } }, [
+                        h('svg', { class: 'platform-icon', viewBox: '0 0 24 24', width: 12, height: 12, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }, [
+                          h('path', { d: 'M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z' })
+                        ]),
+                        h('span', {}, 'World 2')
+                      ])
+                    ])
+                  ]),
+                  h('div', { class: ['qa-text', 'answer-text', { 'placeholder-text': isPlaceholder }], innerHTML: isPlaceholder ? answerText : formatAnswer(answerText, isExpanded).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>') }),
+                  !isPlaceholder && answerText.length > 400 && h('button', { class: 'expand-answer-btn', onClick: () => toggleAnswer(expandKey) },
+                    isExpanded ? 'Show Less' : 'Show More')
+                ])
+              ])
+            ])
+          })
+        ),
+        
+        // Quotes Section
+        props.result.interviews[activeIndex.value]?.quotes?.length > 0 && h('div', { class: 'quotes-section' }, [
+          h('div', { class: 'quotes-header' }, 'Key Quotes'),
+          h('div', { class: 'quotes-list' },
+            props.result.interviews[activeIndex.value].quotes.slice(0, 3).map((quote, qi) => {
+              const cleanedQuote = cleanQuoteText(quote)
+              const displayQuote = cleanedQuote.length > 200 ? cleanedQuote.substring(0, 200) + '...' : cleanedQuote
+              return h('blockquote', { key: qi, class: 'quote-item', innerHTML: renderMarkdown(displayQuote) })
+            })
+          )
+        ])
+      ]),
+
+      // Summary Section
+      props.result.summary && h('div', { class: 'summary-section' }, [
+        h('div', { class: 'summary-header' }, 'Interview Summary'),
+        h('div', { class: 'summary-content', innerHTML: renderMarkdown(props.result.summary.length > 500 ? props.result.summary.substring(0, 500) + '...' : props.result.summary) })
+      ])
+    ])
+  }
+}
+
+// Quick Search Display Component: Renders 'quick_search' results
+const QuickSearchDisplay = {
+  props: ['result', 'resultLength'],
+  setup(props) {
+    const activeTab = ref('facts')
+    const expandedFacts = ref(false)
+    const INITIAL_SHOW_COUNT = 5
+    
+    const hasEdges = computed(() => props.result.edges && props.result.edges.length > 0)
+    const hasNodes = computed(() => props.result.nodes && props.result.nodes.length > 0)
+    const showTabs = computed(() => hasEdges.value || hasNodes.value)
+    
+    const formatSize = (length) => {
+      if (!length) return ''
+      return length >= 1000 ? `${(length / 1000).toFixed(1)}k chars` : `${length} chars`
+    }
+    
+    return () => h('div', { class: 'quick-search-display' }, [
+      h('div', { class: 'quicksearch-header' }, [
+        h('div', { class: 'header-main' }, [
+          h('div', { class: 'header-title' }, 'Quick Search'),
+          h('div', { class: 'header-stats' }, [
+            h('span', { class: 'stat-item' }, [
+              h('span', { class: 'stat-value' }, props.result.count || props.result.facts.length),
+              h('span', { class: 'stat-label' }, 'Results')
+            ]),
+            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
+          ])
+        ]),
+        props.result.query && h('div', { class: 'header-query' }, [
+          h('span', { class: 'query-label' }, 'Search: '),
+          h('span', { class: 'query-text' }, props.result.query)
+        ])
+      ]),
+      
+      showTabs.value && h('div', { class: 'quicksearch-tabs' }, [
+        h('button', { class: ['quicksearch-tab', { active: activeTab.value === 'facts' }], onClick: () => { activeTab.value = 'facts' } }, [
+          h('span', { class: 'tab-label' }, `Facts (${props.result.facts.length})`)
+        ]),
+        hasEdges.value && h('button', { class: ['quicksearch-tab', { active: activeTab.value === 'edges' }], onClick: () => { activeTab.value = 'edges' } }, [
+          h('span', { class: 'tab-label' }, `Relations (${props.result.edges.length})`)
+        ]),
+        hasNodes.value && h('button', { class: ['quicksearch-tab', { active: activeTab.value === 'nodes' }], onClick: () => { activeTab.value = 'nodes' } }, [
+          h('span', { class: 'tab-label' }, `Nodes (${props.result.nodes.length})`)
+        ])
+      ]),
+      
+      h('div', { class: ['quicksearch-content', { 'no-tabs': !showTabs.value }] }, [
+        // Facts Panel
+        ((!showTabs.value) || activeTab.value === 'facts') && h('div', { class: 'facts-panel' }, [
+          !showTabs.value && h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Search Results'),
+            h('span', { class: 'panel-count' }, `${props.result.facts.length} total`)
+          ]),
+          props.result.facts.length > 0 ? h('div', { class: 'facts-list' },
+            (expandedFacts.value ? props.result.facts : props.result.facts.slice(0, INITIAL_SHOW_COUNT)).map((fact, i) => 
+              h('div', { class: 'fact-item', key: i }, [
+                h('span', { class: 'fact-number' }, i + 1),
+                h('div', { class: 'fact-content' }, fact)
+              ])
+            )
+          ) : h('div', { class: 'empty-state' }, 'No results found'),
+          props.result.facts.length > INITIAL_SHOW_COUNT && h('button', { class: 'expand-btn', onClick: () => { expandedFacts.value = !expandedFacts.value } },
+            expandedFacts.value ? `Collapse ▲` : `Expand all ${props.result.facts.length} ▼`)
+        ]),
+        
+        // Edges Panel
+        activeTab.value === 'edges' && hasEdges.value && h('div', { class: 'edges-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Related Relations'),
+            h('span', { class: 'panel-count' }, `${props.result.edges.length} total`)
+          ]),
+          h('div', { class: 'edges-list' },
+            props.result.edges.map((edge, i) => 
+              h('div', { class: 'edge-item', key: i }, [
+                h('span', { class: 'edge-source' }, edge.source),
+                h('span', { class: 'edge-arrow' }, [h('span', { class: 'edge-line' }), h('span', { class: 'edge-label' }, edge.relation), h('span', { class: 'edge-line' })]),
+                h('span', { class: 'edge-target' }, edge.target)
+              ])
+            )
+          )
+        ]),
+        
+        // Nodes Panel
+        activeTab.value === 'nodes' && hasNodes.value && h('div', { class: 'nodes-panel' }, [
+          h('div', { class: 'panel-header' }, [
+            h('span', { class: 'panel-title' }, 'Related Nodes'),
+            h('span', { class: 'panel-count' }, `${props.result.nodes.length} total`)
+          ]),
+          h('div', { class: 'nodes-grid' },
+            props.result.nodes.map((node, i) => 
+              h('div', { class: 'node-tag', key: i }, [
+                h('span', { class: 'node-name' }, node.name),
+                node.type && h('span', { class: 'node-type' }, node.type)
+              ])
+            )
+          )
+        ])
+      ])
+    ])
+  }
+}
+
+// Computed Properties: Derived state for the UI
+const statusClass = computed(() => {
+  if (isComplete.value) return 'completed'
+  if (agentLogs.value.length > 0) return 'processing'
+  return 'pending'
+})
+
+const statusText = computed(() => {
+  if (isComplete.value) return 'Completed'
+  if (agentLogs.value.length > 0) return 'Generating...'
+  return 'Waiting'
+})
+
+const totalSections = computed(() => reportOutline.value?.sections?.length || 0)
+const completedSections = computed(() => Object.keys(generatedSections.value).length)
+const progressPercent = computed(() => totalSections.value === 0 ? 0 : Math.round((completedSections.value / totalSections.value) * 100))
+const totalToolCalls = computed(() => agentLogs.value.filter(l => l.action === 'tool_call').length)
+
+const formatElapsedTime = computed(() => {
+  if (!startTime.value) return '0s'
+  const lastLog = agentLogs.value[agentLogs.value.length - 1]
+  const elapsed = lastLog?.elapsed_seconds || 0
+  if (elapsed < 60) return `${Math.round(elapsed)}s`
+  const mins = Math.floor(elapsed / 60)
+  const secs = Math.round(elapsed % 60)
+  return `${mins}m ${secs}s`
+})
+
+const displayLogs = computed(() => agentLogs.value)
+
+const activeSectionIndex = computed(() => {
+  if (isComplete.value) return null
+  if (currentSectionIndex.value) return currentSectionIndex.value
+  if (totalSections.value > 0 && completedSections.value < totalSections.value) return completedSections.value + 1
+  return null
+})
+
+const isPlanningDone = computed(() => !!reportOutline.value?.sections?.length || agentLogs.value.some(l => l.action === 'planning_complete'))
+const isPlanningStarted = computed(() => agentLogs.value.some(l => l.action === 'planning_start' || l.action === 'report_start'))
+const isFinalizing = computed(() => !isComplete.value && isPlanningDone.value && totalSections.value > 0 && completedSections.value >= totalSections.value)
+
+// Currently active step (for top display)
+const activeStep = computed(() => {
+  const steps = workflowSteps.value
+  const active = steps.find(s => s.status === 'active')
+  if (active) return active
+  const doneSteps = steps.filter(s => s.status === 'done')
+  if (doneSteps.length > 0) return doneSteps[doneSteps.length - 1]
+  return steps[0] || { noLabel: '--', title: 'Waiting to start', status: 'todo', meta: '' }
+})
+
+const workflowSteps = computed(() => {
+  const steps = []
+
+  const planningStatus = isPlanningDone.value ? 'done' : (isPlanningStarted.value ? 'active' : 'todo')
+  steps.push({
+    key: 'planning',
+    noLabel: 'PL',
+    title: 'Planning / Outline',
+    status: planningStatus,
+    meta: planningStatus === 'active' ? 'IN PROGRESS' : ''
+  })
+
+  const sections = reportOutline.value?.sections || []
+  sections.forEach((section, i) => {
+    const idx = i + 1
+    const status = (isComplete.value || !!generatedSections.value[idx]) ? 'done' : (activeSectionIndex.value === idx ? 'active' : 'todo')
+    steps.push({
+      key: `section-${idx}`,
+      noLabel: String(idx).padStart(2, '0'),
+      title: section.title,
+      status,
+      meta: status === 'active' ? 'IN PROGRESS' : ''
+    })
+  })
+
+  const completeStatus = isComplete.value ? 'done' : (isFinalizing.value ? 'active' : 'todo')
+  steps.push({
+    key: 'complete',
+    noLabel: 'OK',
+    title: 'Complete',
+    status: completeStatus,
+    meta: completeStatus === 'active' ? 'FINALIZING' : ''
+  })
+
+  return steps
+})
+
+// Methods: Helper functions for logic and formatting
+const addLog = (msg) => emit('add-log', msg)
+
+const isSectionCompleted = (sectionIndex) => !!generatedSections.value[sectionIndex]
+
+const formatTime = (timestamp) => {
+  if (!timestamp) return ''
+  try {
+    return new Date(timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch { return '' }
+}
+
+const formatParams = (params) => {
+  if (!params) return ''
+  try { return JSON.stringify(params, null, 2) } catch { return String(params) }
+}
+
+const formatResultSize = (length) => {
+  if (!length) return ''
+  if (length < 1000) return `${length} chars`
+  return `${(length / 1000).toFixed(1)}k chars`
+}
+
+const truncateText = (text, maxLen) => {
+  if (!text) return ''
+  if (text.length <= maxLen) return text
+  return text.substring(0, maxLen) + '...'
+}
+
+// Custom Markdown Renderer
+const renderMarkdown = (content) => {
+  if (!content) return ''
+  
+  // Remove leading second-level headings (## xxx) since section title is shown in outer layer
+  let processedContent = content.replace(/^##\s+.+\n+/, '')
+  
+  // Handle code blocks
+  let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
+  
+  // Handle inline code
+  html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+  
+  // Handle headings
+  html = html.replace(/^#### (.+)$/gm, '<h5 class="md-h5">$1</h5>')
+  html = html.replace(/^### (.+)$/gm, '<h4 class="md-h4">$1</h4>')
+  html = html.replace(/^## (.+)$/gm, '<h3 class="md-h3">$1</h3>')
+  html = html.replace(/^# (.+)$/gm, '<h2 class="md-h2">$1</h2>')
+  
+  // Handle blockquotes
+  html = html.replace(/^> (.+)$/gm, '<blockquote class="md-quote">$1</blockquote>')
+  
+  // Handle lists - support sub-lists
+  html = html.replace(/^(\s*)- (.+)$/gm, (match, indent, text) => {
+    const level = Math.floor(indent.length / 2)
+    return `<li class="md-li" data-level="${level}">${text}</li>`
+  })
+  html = html.replace(/^(\s*)(\d+)\. (.+)$/gm, (match, indent, num, text) => {
+    const level = Math.floor(indent.length / 2)
+    return `<li class="md-oli" data-level="${level}">${text}</li>`
+  })
+
+  // Wrap consecutive list items in ul/ol tags
+  html = html.replace(/(<li class="md-li"[^>]*>.*?<\/li>\s*)+/g, '<ul class="md-ul">$&</ul>')
+  html = html.replace(/(<li class="md-oli"[^>]*>.*?<\/li>\s*)+/g, '<ol class="md-ol">$&</ol>')
+
+  // Clean whitespace between list items
+  html = html.replace(/<\/li>\s+<li/g, '</li><li')
+  html = html.replace(/<ul class="md-ul">\s+/g, '<ul class="md-ul">')
+  html = html.replace(/<ol class="md-ol">\s+/g, '<ol class="md-ol">')
+  html = html.replace(/\s+<\/ul>/g, '</ul>')
+  html = html.replace(/\s+<\/ol>/g, '</ol>')
+  
+  // Handle bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  html = html.replace(/_(.+?)_/g, '<em>$1</em>')
+  
+  // Handle horizontal rules
+  html = html.replace(/^---$/gm, '<hr class="md-hr">')
+  
+  // Handle line breaks - double newlines become paragraph breaks, single becomes <br>
+  html = html.replace(/\n\n/g, '</p><p class="md-p">')
+  html = html.replace(/\n/g, '<br>')
+  
+  // Wrap in paragraph
+  html = '<p class="md-p">' + html + '</p>'
+  
+  // Clean up empty paragraphs and invalid nestings
+  html = html.replace(/<p class="md-p"><\/p>/g, '')
+  html = html.replace(/<p class="md-p">(<h[2-5])/g, '$1')
+  html = html.replace(/(<\/h[2-5]>)<\/p>/g, '$1')
+  html = html.replace(/<p class="md-p">(<ul|<ol|<blockquote|<pre|<hr)/g, '$1')
+  html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>|<\/pre>)<\/p>/g, '$1')
+  html = html.replace(/<br>\s*(<ul|<ol|<blockquote)/g, '$1')
+  html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>)\s*<br>/g, '$1')
+  html = html.replace(/<p class="md-p">(<br>\s*)+(<ul|<ol|<blockquote|<pre|<hr)/g, '$2')
+  html = html.replace(/(<br>\s*){2,}/g, '<br>')
+  html = html.replace(/(<\/ol>|<\/ul>|<\/blockquote>)<br>(<p|<div)/g, '$1$2')
+
+  // Fix numbering for non-consecutive ordered lists
+  const tokens = html.split(/(<ol class="md-ol">(?:<li class="md-oli"[^>]*>[\s\S]*?<\/li>)+<\/ol>)/g)
+  let olCounter = 0
+  let inSequence = false
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].startsWith('<ol class="md-ol">')) {
+      const liCount = (tokens[i].match(/<li class="md-oli"/g) || []).length
+      if (liCount === 1) {
+        olCounter++
+        if (olCounter > 1) tokens[i] = tokens[i].replace('<ol class="md-ol">', `<ol class="md-ol" start="${olCounter}">`)
+        inSequence = true
+      } else {
+        olCounter = 0
+        inSequence = false
+      }
+    } else if (inSequence) {
+      if (/<h[2-5]/.test(tokens[i])) { olCounter = 0; inSequence = false }
+    }
+  }
+  html = tokens.join('')
+
+  return html
+}
+
+// Get CSS class for timeline item based on state
+const getTimelineItemClass = (log, idx, total) => {
+  const isLatest = idx === total - 1 && !isComplete.value
+  const isMilestone = log.action === 'section_complete' || log.action === 'report_complete'
+  return {
+    'node--active': isLatest,
+    'node--done': !isLatest && isMilestone,
+    'node--muted': !isLatest && !isMilestone,
+    'node--tool': log.action === 'tool_call' || log.action === 'tool_result'
+  }
+}
+
+// Get CSS class for connector dot
+const getConnectorClass = (log, idx, total) => {
+  const isLatest = idx === total - 1 && !isComplete.value
+  if (isLatest) return 'dot-active'
+  if (log.action === 'section_complete' || log.action === 'report_complete') return 'dot-done'
+  return 'dot-muted'
+}
+
+// Map action types to human-readable labels
+const getActionLabel = (action) => {
+  const labels = {
+    'report_start': 'Report Started',
+    'planning_start': 'Planning',
+    'planning_complete': 'Plan Complete',
+    'section_start': 'Section Start',
+    'section_content': 'Content Ready',
+    'section_complete': 'Section Done',
+    'tool_call': 'Tool Call',
+    'tool_result': 'Tool Result',
+    'llm_response': 'LLM Response',
+    'report_complete': 'Complete'
+  }
+  return labels[action] || action
+}
+
+// Get CSS class for console log messages
+const getLogLevelClass = (log) => {
+  if (log.includes('ERROR')) return 'error'
+  if (log.includes('WARNING')) return 'warning'
+  return ''
+}
+
+// Polling: Logic to fetch logs periodically
+let agentLogTimer = null
+let consoleLogTimer = null
+
+const fetchAgentLog = async () => {
+  if (!props.reportId) return
+  
+  try {
+    const res = await getAgentLog(props.reportId, agentLogLine.value)
+    
+    if (res.success && res.data) {
+      const newLogs = res.data.logs || []
+      
+      if (newLogs.length > 0) {
+        newLogs.forEach(log => {
+          agentLogs.value.push(log)
+          
+          // Update state based on log action
+          if (log.action === 'planning_complete' && log.details?.outline) {
+            reportOutline.value = log.details.outline
+          }
+          
+          if (log.action === 'section_start') {
+            currentSectionIndex.value = log.section_index
+          }
+
+          // section_complete - section generation finished
+          if (log.action === 'section_complete') {
+            if (log.details?.content) {
+              generatedSections.value[log.section_index] = log.details.content
+              // Auto-expand newly generated section
+              expandedContent.value.add(log.section_index - 1)
+              currentSectionIndex.value = null
+            }
+          }
+          
+          if (log.action === 'report_complete') {
+            isComplete.value = true
+            currentSectionIndex.value = null  // Ensure loading state is cleared
+            emit('update-status', 'completed')
+            stopPolling()
+          }
+          
+          if (log.action === 'report_start') {
+            startTime.value = new Date(log.timestamp)
+          }
+        })
+        
+        agentLogLine.value = res.data.from_line + newLogs.length
+        
+        // Scroll handling: Scroll to top if complete, else scroll to bottom
+        nextTick(() => {
+          if (rightPanel.value) {
+            // If task is complete, scroll to top; otherwise follow latest logs at bottom
+            if (isComplete.value) {
+              rightPanel.value.scrollTop = 0
+            } else {
+              rightPanel.value.scrollTop = rightPanel.value.scrollHeight
+            }
+          }
+        })
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch agent log:', err)
+  }
+}
+
+// Extract final answer content from LLM response
+const extractFinalContent = (response) => {
+  if (!response) return null
+  
+  // Try to match <final_answer> tags
+  const finalAnswerTagMatch = response.match(/<final_answer>([\s\S]*?)<\/final_answer>/)
+  if (finalAnswerTagMatch) return finalAnswerTagMatch[1].trim()
+  
+  // Try to match "Final Answer:" text
+  const finalAnswerMatch = response.match(/Final\s*Answer:\s*\n*([\s\S]*)$/i)
+  if (finalAnswerMatch) return finalAnswerMatch[1].trim()
+  
+  const trimmedResponse = response.trim()
+  if (trimmedResponse.match(/^[#>]/)) return trimmedResponse
+  
+  // Fallback logic for long responses with formatting
+  if (response.length > 300 && (response.includes('**') || response.includes('>'))) {
+    const thoughtMatch = response.match(/^Thought:[\s\S]*?(?=\n\n[^T]|\n\n$)/i)
+    if (thoughtMatch) {
+      const afterThought = response.substring(thoughtMatch[0].length).trim()
+      if (afterThought.length > 100) return afterThought
+    }
+  }
+  
+  return null
+}
+
+const fetchConsoleLog = async () => {
+  if (!props.reportId) return
+  
+  try {
+    const res = await getConsoleLog(props.reportId, consoleLogLine.value)
+    
+    if (res.success && res.data) {
+      const newLogs = res.data.logs || []
+      
+      if (newLogs.length > 0) {
+        consoleLogs.value.push(...newLogs)
+        consoleLogLine.value = res.data.from_line + newLogs.length
+        
+        nextTick(() => {
+          if (logContent.value) {
+            logContent.value.scrollTop = logContent.value.scrollHeight
+          }
+        })
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch console log:', err)
+  }
+}
+
+const startPolling = () => {
+  if (agentLogTimer || consoleLogTimer) return
+  
+  fetchAgentLog()
+  fetchConsoleLog()
+  
+  agentLogTimer = setInterval(fetchAgentLog, 2000)
+  consoleLogTimer = setInterval(fetchConsoleLog, 1500)
+}
+
+const stopPolling = () => {
+  if (agentLogTimer) { clearInterval(agentLogTimer); agentLogTimer = null }
+  if (consoleLogTimer) { clearInterval(consoleLogTimer); consoleLogTimer = null }
+}
+
+// Lifecycle Hooks
+onMounted(() => {
+  if (props.reportId) {
+    addLog(`Report Agent initialized: ${props.reportId}`)
+    startPolling()
+  }
+})
+
+onUnmounted(() => stopPolling())
+
+// Watcher: Reset state when reportId changes
+watch(() => props.reportId, (newId) => {
+  if (newId) {
+    agentLogs.value = []
+    consoleLogs.value = []
+    agentLogLine.value = 0
+    consoleLogLine.value = 0
+    reportOutline.value = null
+    currentSectionIndex.value = null
+    generatedSections.value = {}
+    expandedContent.value = new Set()
+    expandedLogs.value = new Set()
+    collapsedSections.value = new Set()
+    isComplete.value = false
+    startTime.value = null
+    startPolling()
+  }
+}, { immediate: true })
+</script>
+
+<style scoped>
+/* Root container and layout styles */
+.report-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #F8F9FA;
+  font-family: 'Inter', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.main-split-layout { flex: 1; display: flex; overflow: hidden; }
+
+/* Panel Header Styles */
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  background: #FFFFFF;
+  border-bottom: 1px solid #E5E7EB;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-dot { width: 8px; height: 8px; border-radius: 50%; background: #1F2937; box-shadow: 0 0 0 3px rgba(31,41,55,0.15); margin-right: 10px; flex-shrink: 0; animation: pulse-dot 1.5s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { box-shadow: 0 0 0 3px rgba(31,41,55,0.15); } 50% { box-shadow: 0 0 0 5px rgba(31,41,55,0.1); } }
+.header-index { font-size: 12px; font-weight: 600; color: #9CA3AF; margin-right: 10px; flex-shrink: 0; }
+.header-title { font-size: 13px; font-weight: 600; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+.header-meta { margin-left: auto; font-size: 10px; font-weight: 600; color: #6B7280; flex-shrink: 0; }
+.panel-header--active { background: #FAFAFA; border-color: #1F2937; }
+.panel-header--active .header-index, .panel-header--active .header-title, .panel-header--active .header-meta { color: #1F2937; }
+.panel-header--done .header-index { color: #10B981; }
+.panel-header--todo .header-index, .panel-header--todo .header-title { color: #9CA3AF; }
+
+/* Left Panel: Report Display Styles */
+.left-panel.report-style { width: 45%; min-width: 450px; background: #FFFFFF; border-right: 1px solid #E5E7EB; overflow-y: auto; display: flex; flex-direction: column; padding: 30px 50px 60px 50px; }
+.left-panel::-webkit-scrollbar { width: 6px; }
+.left-panel::-webkit-scrollbar-track { background: transparent; }
+.left-panel::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.left-panel:hover::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); }
+.left-panel::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
+
+.report-content-wrapper { max-width: 800px; margin: 0 auto; width: 100%; }
+.report-header-block { margin-bottom: 30px; }
+.report-meta { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.report-tag { background: #000000; color: #FFFFFF; font-size: 11px; font-weight: 700; padding: 4px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
+.report-id { font-size: 11px; color: #9CA3AF; font-weight: 500; letter-spacing: 0.02em; }
+.main-title { font-family: 'Times New Roman', Times, serif; font-size: 36px; font-weight: 700; color: #111827; line-height: 1.2; margin: 0 0 16px 0; letter-spacing: -0.02em; }
+.sub-title { font-family: 'Times New Roman', Times, serif; font-size: 16px; color: #6B7280; font-style: italic; line-height: 1.6; margin: 0 0 30px 0; font-weight: 400; }
+.header-divider { height: 1px; background: #E5E7EB; width: 100%; }
+
+/* Sections List Styles */
+.sections-list { display: flex; flex-direction: column; gap: 32px; }
+.report-section-item { display: flex; flex-direction: column; gap: 12px; }
+.section-header-row { display: flex; align-items: baseline; gap: 12px; transition: background-color 0.2s ease; padding: 8px 12px; margin: -8px -12px; border-radius: 8px; }
+.section-header-row.clickable { cursor: pointer; }
+.section-header-row.clickable:hover { background-color: #F9FAFB; }
+.collapse-icon { margin-left: auto; color: #9CA3AF; transition: transform 0.3s ease; flex-shrink: 0; align-self: center; }
+.collapse-icon.is-collapsed { transform: rotate(-90deg); }
+.section-number { font-family: 'JetBrains Mono', monospace; font-size: 16px; color: #9CA3AF; font-weight: 500; }
+.section-title { font-family: 'Times New Roman', Times, serif; font-size: 24px; font-weight: 600; color: #111827; margin: 0; transition: color 0.3s ease; }
+.report-section-item.is-pending .section-title { color: #D1D5DB; }
+.report-section-item.is-active .section-title, .report-section-item.is-completed .section-title { color: #111827; }
+.section-body { padding-left: 28px; overflow: hidden; }
+
+/* Generated Content Markdown Styles */
+.generated-content { font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.8; color: #374151; }
+.generated-content :deep(p) { margin-bottom: 1em; }
+.generated-content :deep(.md-h2), .generated-content :deep(.md-h3), .generated-content :deep(.md-h4) { font-family: 'Times New Roman', Times, serif; color: #111827; margin-top: 1.5em; margin-bottom: 0.8em; font-weight: 700; }
+.generated-content :deep(.md-h2) { font-size: 20px; border-bottom: 1px solid #F3F4F6; padding-bottom: 8px; }
+.generated-content :deep(.md-h3) { font-size: 18px; }
+.generated-content :deep(.md-h4) { font-size: 16px; }
+.generated-content :deep(.md-ul), .generated-content :deep(.md-ol) { padding-left: 24px; margin: 12px 0; }
+.generated-content :deep(.md-li), .generated-content :deep(.md-oli) { margin: 6px 0; }
+.generated-content :deep(.md-quote) { border-left: 3px solid #E5E7EB; padding-left: 16px; margin: 1.5em 0; color: #6B7280; font-style: italic; font-family: 'Times New Roman', Times, serif; }
+.generated-content :deep(.code-block) { background: #F9FAFB; padding: 12px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; overflow-x: auto; margin: 1em 0; border: 1px solid #E5E7EB; }
+.generated-content :deep(strong) { font-weight: 600; color: #111827; }
+.generated-content :deep(.md-h2) { font-family: 'Times New Roman', Times, serif; font-size: 18px; margin-top: 0; }
+
+/* Loading State Styles */
+.loading-state { display: flex; align-items: center; gap: 10px; color: #6B7280; font-size: 14px; margin-top: 4px; }
+.loading-icon { width: 18px; height: 18px; animation: spin 1s linear infinite; display: flex; align-items: center; justify-content: center; }
+.loading-text { font-family: 'Times New Roman', Times, serif; font-size: 15px; color: #4B5563; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Transitions */
+.slide-content-enter-active { transition: opacity 0.3s ease-out; }
+.slide-content-leave-active { transition: opacity 0.2s ease-in; }
+.slide-content-enter-from, .slide-content-leave-to { opacity: 0; }
+
+/* Waiting Placeholder Styles */
+.waiting-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 40px; color: #9CA3AF; }
+.waiting-animation { position: relative; width: 48px; height: 48px; }
+.waiting-ring { position: absolute; width: 100%; height: 100%; border: 2px solid #E5E7EB; border-radius: 50%; animation: ripple 2s cubic-bezier(0.4,0,0.2,1) infinite; }
+.waiting-ring:nth-child(2) { animation-delay: 0.4s; }
+.waiting-ring:nth-child(3) { animation-delay: 0.8s; }
+@keyframes ripple { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(2); opacity: 0; } }
+.waiting-text { font-size: 14px; }
+
+/* Right Panel: Workflow Timeline Styles */
+.right-panel {
+  flex: 1;
+  background: #FFFFFF;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  --wf-border: #E5E7EB;
+  --wf-divider: #F3F4F6;
+  --wf-active-bg: #FAFAFA;
+  --wf-active-border: #1F2937;
+  --wf-active-dot: #1F2937;
+  --wf-active-text: #1F2937;
+  --wf-done-bg: #F9FAFB;
+  --wf-done-border: #E5E7EB;
+  --wf-done-dot: #10B981;
+  --wf-muted-dot: #D1D5DB;
+  --wf-todo-text: #9CA3AF;
+}
+
+.right-panel::-webkit-scrollbar { width: 6px; }
+.right-panel::-webkit-scrollbar-track { background: transparent; }
+.right-panel::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.right-panel:hover::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); }
+.right-panel::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
+
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+.workflow-overview { padding: 16px 20px 0 20px; }
+.workflow-metrics { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.metric { display: inline-flex; align-items: baseline; gap: 6px; }
+.metric-right { margin-left: auto; }
+.metric-label { font-size: 11px; font-weight: 600; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-value { font-size: 12px; color: #374151; }
+.metric-pill { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--wf-border); background: #F9FAFB; color: #6B7280; }
+.metric-pill.pill--processing { background: var(--wf-active-bg); border-color: var(--wf-active-border); color: var(--wf-active-text); }
+.metric-pill.pill--completed { background: #ECFDF5; border-color: #A7F3D0; color: #065F46; }
+.metric-pill.pill--pending { background: transparent; border-style: dashed; color: #6B7280; }
+
+/* Workflow Steps Visual Styles */
+.workflow-steps { display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
+.wf-step { display: grid; grid-template-columns: 24px 1fr; gap: 12px; padding: 10px 12px; border: 1px solid var(--wf-divider); border-radius: 8px; background: #FFFFFF; }
+.wf-step--active { background: var(--wf-active-bg); border-color: var(--wf-active-border); }
+.wf-step--done { background: var(--wf-done-bg); border-color: var(--wf-done-border); }
+.wf-step--todo { background: transparent; border-color: var(--wf-border); border-style: dashed; }
+.wf-step-connector { display: flex; flex-direction: column; align-items: center; width: 24px; flex-shrink: 0; }
+.wf-step-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--wf-muted-dot); border: 2px solid #FFFFFF; z-index: 1; }
+.wf-step-line { width: 2px; flex: 1; background: var(--wf-divider); margin-top: -2px; }
+.wf-step--active .wf-step-dot { background: var(--wf-active-dot); box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+.wf-step--done .wf-step-dot { background: var(--wf-done-dot); }
+.wf-step-title-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.wf-step-index { font-size: 11px; font-weight: 700; color: #9CA3AF; letter-spacing: 0.02em; flex-shrink: 0; }
+.wf-step-title { font-family: 'Times New Roman', Times, serif; font-size: 13px; font-weight: 600; color: #111827; line-height: 1.35; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-step-meta { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--wf-active-text); text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0; }
+.wf-step--todo .wf-step-title, .wf-step--todo .wf-step-index { color: var(--wf-todo-text); }
+.workflow-divider { height: 1px; background: var(--wf-divider); margin: 14px 0 0 0; }
+
+/* Timeline Item Styles */
+.workflow-timeline { padding: 14px 20px 24px; flex: 1; }
+.timeline-item { display: grid; grid-template-columns: 24px 1fr; gap: 12px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--wf-divider); border-radius: 8px; background: #FFFFFF; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.timeline-item:hover { background: #F9FAFB; border-color: var(--wf-border); }
+.timeline-item.node--active { background: var(--wf-active-bg); border-color: var(--wf-active-border); }
+.timeline-item.node--active:hover { background: var(--wf-active-bg); border-color: var(--wf-active-border); }
+.timeline-item.node--done { background: var(--wf-done-bg); border-color: var(--wf-done-border); }
+.timeline-item.node--done:hover { background: var(--wf-done-bg); border-color: var(--wf-done-border); }
+.timeline-connector { display: flex; flex-direction: column; align-items: center; width: 24px; flex-shrink: 0; }
+.connector-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--wf-muted-dot); border: 2px solid #FFFFFF; z-index: 1; }
+.connector-line { width: 2px; flex: 1; background: var(--wf-divider); margin-top: -2px; }
+.dot-active { background: var(--wf-active-dot); box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+.dot-done { background: var(--wf-done-dot); }
+.dot-muted { background: var(--wf-muted-dot); }
+.timeline-content { min-width: 0; background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
+.timeline-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.action-label { font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: 0.03em; }
+.action-time { font-size: 11px; color: #9CA3AF; font-family: 'JetBrains Mono', monospace; }
+.timeline-body { font-size: 13px; color: #4B5563; }
+.timeline-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #F3F4F6; }
+.elapsed-placeholder { flex-shrink: 0; }
+.footer-actions { display: flex; gap: 8px; margin-left: auto; }
+.elapsed-badge { font-size: 11px; color: #6B7280; background: #F3F4F6; padding: 2px 8px; border-radius: 10px; font-family: 'JetBrains Mono', monospace; }
+
+/* Timeline Info Rows and Status Messages */
+.info-row { display: flex; gap: 8px; margin-bottom: 6px; }
+.info-key { font-size: 11px; color: #9CA3AF; min-width: 80px; }
+.info-val { color: #374151; }
+.status-message { padding: 8px 12px; border-radius: 6px; font-size: 13px; border: 1px solid transparent; }
+.status-message.planning { background: var(--wf-active-bg); border-color: var(--wf-active-border); color: var(--wf-active-text); }
+.status-message.success { background: #ECFDF5; border-color: #A7F3D0; color: #065F46; }
+.outline-badge { display: inline-block; margin-top: 8px; padding: 4px 10px; background: #F9FAFB; color: #6B7280; border: 1px solid #E5E7EB; border-radius: 12px; font-size: 11px; font-weight: 500; }
+.section-tag { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: #F9FAFB; border: 1px solid var(--wf-border); border-radius: 6px; }
+.section-tag.content-ready { background: var(--wf-active-bg); border: 1px dashed var(--wf-active-border); }
+.section-tag.content-ready svg { color: var(--wf-active-dot); }
+.section-tag.completed { background: #ECFDF5; border: 1px solid #A7F3D0; }
+.section-tag.completed svg { color: #059669; }
+.tag-num { font-size: 11px; font-weight: 700; color: #6B7280; }
+.section-tag.completed .tag-num { color: #059669; }
+.tag-title { font-size: 13px; font-weight: 500; color: #374151; }
+
+/* Tool Badge Styles */
+.tool-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #F9FAFB; color: #374151; border: 1px solid var(--wf-border); border-radius: 6px; font-size: 12px; font-weight: 600; }
+.tool-icon { flex-shrink: 0; }
+.tool-badge.tool-purple { background: linear-gradient(135deg, #F5F3FF, #EDE9FE); border-color: #C4B5FD; color: #6D28D9; }
+.tool-badge.tool-purple .tool-icon { stroke: #7C3AED; }
+.tool-badge.tool-blue { background: linear-gradient(135deg, #EFF6FF, #DBEAFE); border-color: #93C5FD; color: #1D4ED8; }
+.tool-badge.tool-blue .tool-icon { stroke: #2563EB; }
+.tool-badge.tool-green { background: linear-gradient(135deg, #F0FDF4, #DCFCE7); border-color: #86EFAC; color: #15803D; }
+.tool-badge.tool-green .tool-icon { stroke: #16A34A; }
+.tool-badge.tool-orange { background: linear-gradient(135deg, #FFF7ED, #FFEDD5); border-color: #FDBA74; color: #C2410C; }
+.tool-badge.tool-orange .tool-icon { stroke: #EA580C; }
+.tool-badge.tool-cyan { background: linear-gradient(135deg, #ECFEFF, #CFFAFE); border-color: #67E8F9; color: #0E7490; }
+.tool-badge.tool-cyan .tool-icon { stroke: #0891B2; }
+.tool-badge.tool-pink { background: linear-gradient(135deg, #FDF2F8, #FCE7F3); border-color: #F9A8D4; color: #BE185D; }
+.tool-badge.tool-pink .tool-icon { stroke: #DB2777; }
+.tool-badge.tool-gray { background: linear-gradient(135deg, #F9FAFB, #F3F4F6); border-color: #D1D5DB; color: #374151; }
+.tool-badge.tool-gray .tool-icon { stroke: #6B7280; }
+
+.tool-params { margin-top: 10px; background: transparent; border-radius: 0; padding: 10px 0 0 0; border-top: 1px dashed var(--wf-divider); overflow-x: auto; }
+.tool-params pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #4B5563; white-space: pre-wrap; word-break: break-all; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; padding: 10px; }
+
+.action-btn { background: #F3F4F6; border: 1px solid #E5E7EB; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; }
+.action-btn:hover { background: #E5E7EB; color: #374151; border-color: #D1D5DB; }
+
+/* Result Wrapper Styles */
+.result-wrapper { background: transparent; border: none; border-top: 1px solid var(--wf-divider); border-radius: 0; padding: 12px 0 0 0; }
+.result-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.result-tool { font-size: 12px; font-weight: 600; color: #374151; }
+.result-size { font-size: 10px; color: #6B7280; font-family: 'JetBrains Mono', monospace; }
+.result-raw { margin-top: 10px; max-height: 300px; overflow-y: auto; }
+.result-raw pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; color: #374151; background: #FFFFFF; border: 1px solid #E5E7EB; padding: 10px; border-radius: 6px; }
+.raw-preview { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; color: #6B7280; }
+
+/* LLM Response Styles */
+.llm-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.meta-tag { font-size: 11px; padding: 3px 8px; background: #F3F4F6; color: #6B7280; border-radius: 4px; }
+.meta-tag.active { background: #DBEAFE; color: #1E40AF; }
+.meta-tag.final-answer { background: #D1FAE5; color: #059669; font-weight: 600; }
+.final-answer-hint { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 10px 14px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; color: #065F46; font-size: 12px; font-weight: 500; }
+.final-answer-hint svg { flex-shrink: 0; }
+.llm-content { margin-top: 10px; max-height: 200px; overflow-y: auto; }
+.llm-content pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; color: #4B5563; background: #F3F4F6; padding: 10px; border-radius: 6px; }
+
+.complete-banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px; color: #065F46; font-weight: 600; font-size: 14px; }
+
+.next-step-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 40px); margin: 4px 20px 0 20px; padding: 14px 20px; font-size: 14px; font-weight: 600; color: #FFFFFF; background: #1F2937; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s ease; }
+.next-step-btn:hover { background: #374151; }
+.next-step-btn svg { transition: transform 0.2s ease; }
+.next-step-btn:hover svg { transform: translateX(4px); }
+
+.workflow-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; color: #9CA3AF; font-size: 13px; }
+.empty-pulse { width: 24px; height: 24px; background: #E5E7EB; border-radius: 50%; margin-bottom: 16px; animation: pulse-ring 1.5s infinite; }
+@keyframes pulse-ring { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.5; } }
+
+.timeline-item-enter-active { transition: all 0.4s ease; }
+.timeline-item-enter-from { opacity: 0; transform: translateX(-20px); }
+
+/* ========== Structured Result Display Components Styles ========== */
+:deep(.stat-row) { display: flex; gap: 8px; margin-bottom: 12px; }
+:deep(.stat-box) { flex: 1; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 6px; padding: 10px 8px; text-align: center; }
+:deep(.stat-box .stat-num) { display: block; font-size: 20px; font-weight: 700; color: #111827; font-family: 'JetBrains Mono', monospace; }
+:deep(.stat-box .stat-label) { display: block; font-size: 10px; color: #9CA3AF; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.03em; }
+:deep(.stat-box.highlight) { background: #ECFDF5; border-color: #A7F3D0; }
+:deep(.stat-box.highlight .stat-num) { color: #059669; }
+:deep(.stat-box.muted) { background: #F9FAFB; border-color: #E5E7EB; }
+:deep(.stat-box.muted .stat-num) { color: #6B7280; }
+:deep(.query-display) { background: #F9FAFB; padding: 10px 14px; border-radius: 6px; font-size: 12px; color: #374151; margin-bottom: 12px; border: 1px solid #E5E7EB; line-height: 1.5; }
+:deep(.expand-details) { background: #FFFFFF; border: 1px solid #E5E7EB; padding: 8px 14px; border-radius: 6px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; }
+:deep(.expand-details:hover) { border-color: #D1D5DB; color: #374151; }
+:deep(.detail-content) { margin-top: 14px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 14px; }
+:deep(.section-label) { font-size: 11px; font-weight: 600; color: #6B7280; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #F3F4F6; }
+:deep(.facts-section) { margin-bottom: 14px; }
+:deep(.fact-row) { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid #F3F4F6; }
+:deep(.fact-row:last-child) { border-bottom: none; }
+:deep(.fact-row.active) { background: #ECFDF5; margin: 0 -10px; padding: 8px 10px; border-radius: 6px; border-bottom: none; }
+:deep(.fact-idx) { min-width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: #F3F4F6; border-radius: 6px; font-size: 10px; font-weight: 700; color: #6B7280; flex-shrink: 0; }
+:deep(.fact-row.active .fact-idx) { background: #A7F3D0; color: #065F46; }
+:deep(.fact-text) { font-size: 12px; color: #4B5563; line-height: 1.6; }
+:deep(.entities-section) { margin-bottom: 14px; }
+:deep(.entity-chips) { display: flex; flex-wrap: wrap; gap: 8px; }
+:deep(.entity-chip) { display: inline-flex; align-items: center; gap: 6px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; padding: 6px 12px; }
+:deep(.chip-name) { font-size: 12px; font-weight: 500; color: #111827; }
+:deep(.chip-type) { font-size: 10px; color: #9CA3AF; background: #E5E7EB; padding: 1px 6px; border-radius: 3px; }
+:deep(.relations-section) { margin-bottom: 14px; }
+:deep(.relation-row) { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; border-bottom: 1px solid #F3F4F6; }
+:deep(.relation-row:last-child) { border-bottom: none; }
+:deep(.rel-node) { font-size: 12px; font-weight: 500; color: #111827; background: #F3F4F6; padding: 4px 10px; border-radius: 4px; }
+:deep(.rel-edge) { font-size: 10px; font-weight: 600; color: #FFFFFF; background: #4F46E5; padding: 3px 10px; border-radius: 10px; }
+
+/* Interview Display Deep Styles */
+:deep(.interview-display) { padding: 0; }
+:deep(.interview-display .interview-header) { padding: 0; background: transparent; border-bottom: none; margin-bottom: 16px; }
+:deep(.interview-display .header-main) { display: flex; justify-content: space-between; align-items: center; }
+:deep(.interview-display .header-title) { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: #111827; }
+:deep(.interview-display .header-stats) { display: flex; align-items: center; gap: 6px; }
+:deep(.interview-display .stat-item) { display: flex; align-items: baseline; gap: 4px; }
+:deep(.interview-display .stat-value) { font-size: 14px; font-weight: 600; color: #4F46E5; font-family: 'JetBrains Mono', monospace; }
+:deep(.interview-display .stat-label) { font-size: 11px; color: #9CA3AF; }
+:deep(.interview-display .stat-divider) { color: #D1D5DB; font-size: 12px; }
+:deep(.interview-display .stat-size) { font-size: 11px; color: #9CA3AF; font-family: 'JetBrains Mono', monospace; }
+:deep(.interview-display .header-topic) { margin-top: 4px; font-size: 12px; color: #6B7280; line-height: 1.5; }
+:deep(.interview-display .agent-tabs) { display: flex; gap: 8px; padding: 0 0 14px 0; background: transparent; border-bottom: 1px solid #F3F4F6; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: #E5E7EB transparent; }
+:deep(.interview-display .agent-tabs::-webkit-scrollbar) { height: 4px; }
+:deep(.interview-display .agent-tabs::-webkit-scrollbar-track) { background: transparent; }
+:deep(.interview-display .agent-tabs::-webkit-scrollbar-thumb) { background: #E5E7EB; border-radius: 2px; }
+:deep(.interview-display .agent-tab) { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; font-size: 12px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; }
+:deep(.interview-display .agent-tab:hover) { background: #F3F4F6; border-color: #D1D5DB; color: #374151; }
+:deep(.interview-display .agent-tab.active) { background: linear-gradient(135deg, #EEF2FF, #E0E7FF); border-color: #A5B4FC; color: #4338CA; }
+:deep(.interview-display .tab-avatar) { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; background: #E5E7EB; color: #6B7280; font-size: 10px; font-weight: 700; border-radius: 50%; flex-shrink: 0; }
+:deep(.interview-display .agent-tab.active .tab-avatar) { background: #6366F1; color: #FFFFFF; }
+:deep(.interview-display .tab-name) { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+:deep(.interview-display .interview-detail) { padding: 12px 0; background: transparent; }
+:deep(.interview-display .agent-profile) { display: flex; gap: 12px; padding: 0; background: transparent; border: none; margin-bottom: 16px; }
+:deep(.interview-display .profile-avatar) { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: #E5E7EB; color: #6B7280; font-size: 14px; font-weight: 600; border-radius: 50%; flex-shrink: 0; }
+:deep(.interview-display .profile-info) { flex: 1; min-width: 0; }
+:deep(.interview-display .profile-name) { font-size: 13px; font-weight: 600; color: #111827; margin-bottom: 2px; }
+:deep(.interview-display .profile-role) { font-size: 11px; color: #6B7280; margin-bottom: 4px; }
+:deep(.interview-display .profile-bio) { font-size: 11px; color: #9CA3AF; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+:deep(.interview-display .selection-reason) { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+:deep(.interview-display .reason-label) { font-size: 11px; font-weight: 600; color: #64748B; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 6px; }
+:deep(.interview-display .reason-content) { font-size: 12px; color: #475569; line-height: 1.6; }
+:deep(.interview-display .qa-thread) { display: flex; flex-direction: column; gap: 20px; }
+:deep(.interview-display .qa-pair) { display: flex; flex-direction: column; gap: 12px; }
+:deep(.interview-display .qa-question), :deep(.interview-display .qa-answer) { display: flex; gap: 12px; }
+:deep(.interview-display .qa-badge) { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; border-radius: 4px; flex-shrink: 0; }
+:deep(.interview-display .q-badge) { background: transparent; color: #9CA3AF; border: 1px solid #E5E7EB; }
+:deep(.interview-display .a-badge) { background: #4F46E5; color: #FFFFFF; border: 1px solid #4F46E5; }
+:deep(.interview-display .qa-content) { flex: 1; min-width: 0; }
+:deep(.interview-display .qa-sender) { font-size: 11px; font-weight: 600; color: #9CA3AF; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em; }
+:deep(.interview-display .qa-text) { font-size: 13px; color: #374151; line-height: 1.6; }
+:deep(.interview-display .qa-answer-header) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+:deep(.interview-display .platform-switch) { display: flex; gap: 2px; }
+:deep(.interview-display .platform-btn) { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: transparent; border: 1px solid transparent; border-radius: 4px; font-size: 10px; font-weight: 500; color: #9CA3AF; cursor: pointer; transition: all 0.15s ease; }
+:deep(.interview-display .platform-btn.active) { color: #4F46E5; border-color: #E5E7EB; }
+:deep(.interview-display .answer-text) { font-size: 13px; color: #111827; line-height: 1.6; }
+:deep(.interview-display .answer-text strong) { color: #111827; font-weight: 600; }
+:deep(.interview-display .expand-answer-btn) { display: inline-block; margin-top: 8px; padding: 0; background: transparent; border: none; border-bottom: 1px dotted #D1D5DB; border-radius: 0; font-size: 11px; font-weight: 500; color: #9CA3AF; cursor: pointer; }
+:deep(.interview-display .expand-answer-btn:hover) { color: #6B7280; border-bottom-style: solid; }
+:deep(.interview-display .quotes-section) { background: transparent; border: none; border-top: 1px solid #F3F4F6; padding: 16px 0 0 0; margin-top: 16px; }
+:deep(.interview-display .quotes-header) { font-size: 11px; font-weight: 600; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
+:deep(.interview-display .quotes-list) { display: flex; flex-direction: column; gap: 12px; }
+:deep(.interview-display .quote-item) { margin: 0; padding: 10px 12px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 12px; font-style: italic; color: #4B5563; line-height: 1.5; }
+:deep(.interview-display .summary-section) { margin-top: 20px; padding: 16px 0 0 0; border-top: 1px solid #F3F4F6; }
+:deep(.interview-display .summary-header) { font-size: 11px; font-weight: 600; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+:deep(.interview-display .summary-content) { font-size: 13px; color: #374151; line-height: 1.6; }
+
+/* Insight Display */
+:deep(.insight-display) { padding: 0; }
+:deep(.insight-header) { padding: 12px 16px; background: linear-gradient(135deg, #F5F3FF, #EDE9FE); border-radius: 8px 8px 0 0; border: 1px solid #C4B5FD; border-bottom: none; }
+:deep(.insight-header .header-main) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+:deep(.insight-header .header-title) { font-size: 14px; font-weight: 700; color: #6D28D9; }
+:deep(.insight-header .header-stats) { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+:deep(.insight-header .stat-value) { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #7C3AED; }
+:deep(.insight-header .stat-label) { color: #8B5CF6; font-size: 10px; }
+:deep(.insight-header .stat-divider) { color: #C4B5FD; margin: 0 4px; }
+:deep(.insight-header .stat-size) { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9CA3AF; }
+:deep(.insight-header .header-topic) { font-size: 13px; color: #5B21B6; line-height: 1.5; }
+:deep(.insight-header .header-scenario) { margin-top: 6px; font-size: 11px; color: #7C3AED; }
+:deep(.insight-header .scenario-label) { font-weight: 600; }
+:deep(.insight-tabs) { display: flex; gap: 2px; padding: 8px 12px; background: #FAFAFA; border: 1px solid #E5E7EB; border-top: none; }
+:deep(.insight-tab) { display: flex; align-items: center; gap: 4px; padding: 6px 10px; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; }
+:deep(.insight-tab:hover) { background: #F3F4F6; color: #374151; }
+:deep(.insight-tab.active) { background: #FFFFFF; color: #7C3AED; border-color: #C4B5FD; }
+:deep(.insight-content) { padding: 12px; background: #FFFFFF; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 8px 8px; }
+:deep(.insight-display .panel-header) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #F3F4F6; }
+:deep(.insight-display .panel-title) { font-size: 12px; font-weight: 600; color: #374151; }
+:deep(.insight-display .panel-count) { font-size: 10px; color: #9CA3AF; }
+:deep(.insight-display .facts-list), :deep(.insight-display .relations-list), :deep(.insight-display .subqueries-list) { display: flex; flex-direction: column; gap: 8px; }
+:deep(.insight-display .entities-grid) { display: flex; flex-wrap: wrap; gap: 6px; }
+:deep(.insight-display .fact-item) { display: flex; gap: 10px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.insight-display .fact-number) { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: #E5E7EB; border-radius: 50%; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: #6B7280; }
+:deep(.insight-display .fact-content) { flex: 1; font-size: 12px; color: #374151; line-height: 1.6; }
+:deep(.insight-display .entity-tag) { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; cursor: default; }
+:deep(.insight-display .entity-tag .entity-name) { font-size: 12px; font-weight: 500; color: #111827; }
+:deep(.insight-display .entity-tag .entity-type) { font-size: 9px; color: #7C3AED; background: #EDE9FE; padding: 1px 4px; border-radius: 3px; }
+:deep(.insight-display .entity-tag .entity-fact-count) { font-size: 9px; color: #9CA3AF; margin-left: 2px; }
+:deep(.insight-display .relation-item) { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.insight-display .rel-source), :deep(.insight-display .rel-target) { padding: 4px 8px; background: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 4px; font-size: 11px; font-weight: 500; color: #374151; }
+:deep(.insight-display .rel-arrow) { display: flex; align-items: center; gap: 4px; flex: 1; }
+:deep(.insight-display .rel-line) { flex: 1; height: 1px; background: #D1D5DB; }
+:deep(.insight-display .rel-label) { padding: 2px 6px; background: #EDE9FE; border-radius: 4px; font-size: 10px; font-weight: 500; color: #7C3AED; white-space: nowrap; }
+:deep(.insight-display .subquery-item) { display: flex; gap: 10px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.insight-display .subquery-number) { flex-shrink: 0; padding: 2px 6px; background: #7C3AED; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: #FFFFFF; }
+:deep(.insight-display .subquery-text) { font-size: 12px; color: #374151; line-height: 1.5; }
+
+/* Expand Button */
+:deep(.insight-display .expand-btn), :deep(.panorama-display .expand-btn), :deep(.quick-search-display .expand-btn) { display: block; width: 100%; margin-top: 12px; padding: 8px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; text-align: center; }
+:deep(.insight-display .expand-btn:hover), :deep(.panorama-display .expand-btn:hover), :deep(.quick-search-display .expand-btn:hover) { background: #F3F4F6; color: #374151; border-color: #D1D5DB; }
+:deep(.insight-display .empty-state), :deep(.panorama-display .empty-state), :deep(.quick-search-display .empty-state) { padding: 24px; text-align: center; font-size: 12px; color: #9CA3AF; }
+
+/* Panorama Display */
+:deep(.panorama-display) { padding: 0; }
+:deep(.panorama-header) { padding: 12px 16px; background: linear-gradient(135deg, #EFF6FF, #DBEAFE); border-radius: 8px 8px 0 0; border: 1px solid #93C5FD; border-bottom: none; }
+:deep(.panorama-header .header-main) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+:deep(.panorama-header .header-title) { font-size: 14px; font-weight: 700; color: #1D4ED8; }
+:deep(.panorama-header .stat-value) { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #2563EB; }
+:deep(.panorama-header .stat-label) { color: #60A5FA; font-size: 10px; }
+:deep(.panorama-header .stat-size) { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9CA3AF; }
+:deep(.panorama-header .header-topic) { font-size: 13px; color: #1E40AF; line-height: 1.5; }
+:deep(.panorama-tabs) { display: flex; gap: 2px; padding: 8px 12px; background: #FAFAFA; border: 1px solid #E5E7EB; border-top: none; }
+:deep(.panorama-tab) { display: flex; align-items: center; gap: 4px; padding: 6px 10px; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; }
+:deep(.panorama-tab:hover) { background: #F3F4F6; color: #374151; }
+:deep(.panorama-tab.active) { background: #FFFFFF; color: #2563EB; border-color: #93C5FD; }
+:deep(.panorama-content) { padding: 12px; background: #FFFFFF; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 8px 8px; }
+:deep(.panorama-display .panel-header) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #F3F4F6; }
+:deep(.panorama-display .facts-list) { display: flex; flex-direction: column; gap: 8px; }
+:deep(.panorama-display .fact-item) { display: flex; gap: 10px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.panorama-display .fact-number) { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: #E5E7EB; border-radius: 50%; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: #6B7280; }
+:deep(.panorama-display .fact-item.historical .fact-number) { background: #9CA3AF; color: #FFFFFF; }
+:deep(.panorama-display .fact-content) { flex: 1; font-size: 12px; color: #374151; line-height: 1.6; }
+:deep(.panorama-display .fact-time) { display: block; font-size: 10px; color: #9CA3AF; margin-bottom: 4px; font-family: 'JetBrains Mono', monospace; }
+:deep(.panorama-display .fact-text) { display: block; }
+:deep(.panorama-display .entities-grid) { display: flex; flex-wrap: wrap; gap: 8px; }
+:deep(.panorama-display .entity-tag) { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.panorama-display .entity-name) { font-size: 12px; font-weight: 500; color: #374151; }
+:deep(.panorama-display .entity-type) { font-size: 10px; color: #2563EB; background: #DBEAFE; padding: 2px 6px; border-radius: 4px; }
+
+/* Quick Search Display */
+:deep(.quick-search-display) { padding: 0; }
+:deep(.quicksearch-header) { padding: 12px 16px; background: linear-gradient(135deg, #FFF7ED, #FFEDD5); border-radius: 8px 8px 0 0; border: 1px solid #FDBA74; border-bottom: none; }
+:deep(.quicksearch-header .header-main) { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+:deep(.quicksearch-header .header-title) { font-size: 14px; font-weight: 700; color: #C2410C; }
+:deep(.quicksearch-header .stat-value) { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #EA580C; }
+:deep(.quicksearch-header .stat-label) { color: #FB923C; font-size: 10px; }
+:deep(.quicksearch-header .stat-size) { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #9CA3AF; }
+:deep(.quicksearch-header .header-query) { font-size: 13px; color: #9A3412; line-height: 1.5; }
+:deep(.quicksearch-header .query-label) { font-weight: 600; }
+:deep(.quicksearch-tabs) { display: flex; gap: 2px; padding: 8px 12px; background: #FAFAFA; border: 1px solid #E5E7EB; border-top: none; }
+:deep(.quicksearch-tab) { display: flex; align-items: center; gap: 4px; padding: 6px 10px; background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: 11px; font-weight: 500; color: #6B7280; cursor: pointer; transition: all 0.15s ease; }
+:deep(.quicksearch-tab:hover) { background: #F3F4F6; color: #374151; }
+:deep(.quicksearch-tab.active) { background: #FFFFFF; color: #EA580C; border-color: #FDBA74; }
+:deep(.quicksearch-content) { padding: 12px; background: #FFFFFF; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 8px 8px; }
+:deep(.quick-search-display .facts-list) { display: flex; flex-direction: column; gap: 8px; }
+:deep(.quick-search-display .fact-item) { display: flex; gap: 10px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.quick-search-display .fact-number) { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: #E5E7EB; border-radius: 50%; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: #6B7280; }
+:deep(.quick-search-display .fact-content) { flex: 1; font-size: 12px; color: #374151; line-height: 1.6; }
+:deep(.quick-search-display .edges-list) { display: flex; flex-direction: column; gap: 8px; }
+:deep(.quick-search-display .edge-item) { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.quick-search-display .edge-source), :deep(.quick-search-display .edge-target) { padding: 4px 8px; background: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 4px; font-size: 11px; font-weight: 500; color: #374151; }
+:deep(.quick-search-display .edge-arrow) { display: flex; align-items: center; gap: 4px; flex: 1; }
+:deep(.quick-search-display .edge-line) { flex: 1; height: 1px; background: #D1D5DB; }
+:deep(.quick-search-display .edge-label) { padding: 2px 6px; background: #FFEDD5; border-radius: 4px; font-size: 10px; font-weight: 500; color: #C2410C; white-space: nowrap; }
+:deep(.quick-search-display .nodes-grid) { display: flex; flex-wrap: wrap; gap: 8px; }
+:deep(.quick-search-display .node-tag) { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; }
+:deep(.quick-search-display .node-name) { font-size: 12px; font-weight: 500; color: #374151; }
+:deep(.quick-search-display .node-type) { font-size: 10px; color: #EA580C; background: #FFEDD5; padding: 2px 6px; border-radius: 4px; }
+
+/* Console Logs */
+.console-logs { background: #000; color: #DDD; padding: 16px; font-family: 'JetBrains Mono', monospace; border-top: 1px solid #222; flex-shrink: 0; }
+.log-header { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 8px; font-size: 10px; color: #666; }
+.log-title { text-transform: uppercase; letter-spacing: 0.1em; }
+.log-content { display: flex; flex-direction: column; gap: 4px; height: 100px; overflow-y: auto; padding-right: 4px; }
+.log-content::-webkit-scrollbar { width: 4px; }
+.log-content::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+.log-line { font-size: 11px; line-height: 1.5; }
+.log-msg { color: #BBB; word-break: break-all; }
+.log-msg.error { color: #EF5350; }
+.log-msg.warning { color: #FFA726; }
+.log-msg.success { color: #66BB6A; }
+</style>
